@@ -1,0 +1,9 @@
+.git
+node_modules
+data
+dist
+docs
+tests
+config.toml
+.env
+.env.*

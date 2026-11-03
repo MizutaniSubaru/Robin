@@ -1,0 +1,12 @@
+node_modules/
+
+# Runtime data: database, media, TDLib sessions (sensitive), logs
+data/
+
+# Local config and secrets
+config.toml
+.env
+.env.*
+!.env.example
+
+.DS_Store

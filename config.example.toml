@@ -1,0 +1,23 @@
+# Copy to config.toml. Secrets go in environment variables (see .env.example).
+
+# IANA timezone used when rendering times
+timezone = "Asia/Shanghai"
+
+# Holds robin.db, files/, tdlib/ and logs/
+data_dir = "data"
+
+[log]
+# trace | debug | info | warning | error | fatal
+level = "info"
+# pretty | json | off
+console = "pretty"
+
+# Per-category levels
+[log.categories]
+# "robin.tdlib" = "debug"
+
+# JSON Lines log file, rotated by size
+[log.file]
+enabled = true
+max_size_mb = 20
+max_files = 10

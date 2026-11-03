@@ -1,0 +1,88 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": ["**", "!migrations", "!**/*.md"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 110
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "style": {
+        "useImportType": "error",
+        "useExportType": "error",
+        "useNodejsImportProtocol": "error",
+        "noNonNullAssertion": "warn"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noConsole": { "level": "warn", "options": { "allow": ["error"] } }
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["src/core/events/**", "src/core/reducer/**", "src/core/render/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["bun:*", "node:*", "drizzle-orm", "drizzle-orm/**", "@logtape/**"],
+                    "message": "core/events, core/reducer and core/render are pure: no I/O, database or logging."
+                  },
+                  {
+                    "group": [
+                      "**/config",
+                      "**/config/**",
+                      "**/db",
+                      "**/db/**",
+                      "**/log",
+                      "**/log/**",
+                      "**/core/store/**",
+                      "**/core/scheduler/**",
+                      "**/sources/**",
+                      "**/adapters/**",
+                      "**/agent/**",
+                      "**/llm/**",
+                      "**/media/**"
+                    ],
+                    "message": "core/events, core/reducer and core/render may only import each other and zod; pass anything else in as arguments."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  }
+}
