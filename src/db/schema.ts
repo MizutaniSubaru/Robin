@@ -33,7 +33,8 @@ export const events = sqliteTable(
   ],
 );
 
-// Raw TDLib updates, kept for a limited time for debugging and replay
+// Raw TDLib updates the adapter needs, for debugging and for re-running it over old data.
+// Filtered on the way in (createUpdateFilter); no retention period until the event schema settles
 export const rawUpdates = sqliteTable(
   "raw_updates",
   {

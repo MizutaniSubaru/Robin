@@ -6,6 +6,8 @@
   "scripts": {
     "start": "bun src/main.ts",
     "dev": "bun --watch src/main.ts",
+    "login": "bun src/cli/login.ts",
+    "probe": "bun src/cli/probe.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
@@ -21,6 +23,7 @@
     "@logtape/pretty": "^2.4.2",
     "@logtape/redaction": "^2.4.2",
     "drizzle-orm": "^0.45.4",
+    "prebuilt-tdlib": "0.1008069.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

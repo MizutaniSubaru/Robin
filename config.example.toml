@@ -21,3 +21,10 @@ console = "pretty"
 enabled = true
 max_size_mb = 20
 max_files = 10
+
+[tdlib]
+# libtdjson to load; defaults to the prebuilt-tdlib build bundled for this platform
+# library_path = "/usr/local/lib/libtdjson.so"
+# TDLib's own log in data/logs/tdlib.log: 0 fatal, 1 errors, 2 warnings, 3 info, 4 debug, 5 verbose
+log_verbosity = 2
+use_test_dc = false

@@ -29,10 +29,19 @@ const LogConfig = z.object({
     .prefault({}),
 });
 
+const TdlibConfig = z.object({
+  // libtdjson to load; defaults to the prebuilt-tdlib build for this platform
+  library_path: z.string().min(1).optional(),
+  // TDLib's own log (data/logs/tdlib.log): 0 fatal, 1 errors, 2 warnings, 3 info, 4 debug, 5 verbose
+  log_verbosity: z.number().int().min(0).max(5).default(2),
+  use_test_dc: z.boolean().default(false),
+});
+
 export const ConfigSchema = z.object({
   timezone: IanaTimezone.default("Asia/Shanghai"),
   data_dir: z.string().min(1).default("data"),
   log: LogConfig.prefault({}),
+  tdlib: TdlibConfig.prefault({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

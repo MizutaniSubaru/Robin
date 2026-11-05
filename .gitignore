@@ -10,3 +10,6 @@ config.toml
 !.env.example
 
 .DS_Store
+
+# Private design docs (not published); shareable docs go directly under docs/
+docs/private/
