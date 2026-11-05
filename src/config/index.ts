@@ -1,5 +1,7 @@
 import { join, resolve } from "node:path";
+
 import { z } from "zod";
+
 import { type Config, ConfigSchema } from "./schema.ts";
 
 export { type Config, ConfigSchema, LogLevel } from "./schema.ts";
@@ -21,7 +23,7 @@ export function resolvePaths(config: Config): Paths {
     files: join(dataDir, "files"),
     tdlib: join(dataDir, "tdlib"),
     logs: join(dataDir, "logs"),
-    };
+  };
 }
 
 export function parseConfig(raw: unknown): Config {

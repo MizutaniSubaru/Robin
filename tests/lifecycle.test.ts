@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
+
 import { createLifecycle } from "../src/lifecycle.ts";
 
 describe("lifecycle", () => {
-  test("清理按注册的逆序执行", async () => {
+  test("runs cleanups in reverse registration order", async () => {
     const order: string[] = [];
     const lc = createLifecycle(() => {});
     lc.defer("a", () => void order.push("a"));
@@ -15,7 +16,7 @@ describe("lifecycle", () => {
     expect(order).toEqual(["c", "b", "a"]);
   });
 
-  test("某个清理抛错，其余照常执行", async () => {
+  test("keeps running other cleanups when one throws", async () => {
     const order: string[] = [];
     const errors: string[] = [];
     const lc = createLifecycle((name) => errors.push(name));
@@ -29,7 +30,7 @@ describe("lifecycle", () => {
     expect(errors).toEqual(["bad"]);
   });
 
-  test("并发调用 stop 只执行一遍", async () => {
+  test("concurrent stop calls run cleanups only once", async () => {
     let runs = 0;
     const lc = createLifecycle(() => {});
     lc.defer("a", async () => {
@@ -41,7 +42,7 @@ describe("lifecycle", () => {
     expect(runs).toBe(1);
   });
 
-  test("stop 之后再 defer 会抛错", async () => {
+  test("defer after stop throws", async () => {
     const lc = createLifecycle(() => {});
     await lc.stop();
     expect(() => lc.defer("late", () => {})).toThrow(/shutting down/);

@@ -29,11 +29,29 @@
         "useImportType": "error",
         "useExportType": "error",
         "useNodejsImportProtocol": "error",
-        "noNonNullAssertion": "warn"
+        "noNonNullAssertion": "warn",
+        "useConst": "error",
+        "useTemplate": "error",
+        "useForOf": "error",
+        "useConsistentObjectDefinitions": { "level": "error", "options": { "syntax": "shorthand" } }
       },
       "suspicious": {
         "noExplicitAny": "error",
-        "noConsole": { "level": "warn", "options": { "allow": ["error"] } }
+        "noConsole": { "level": "warn", "options": { "allow": ["error"] } },
+        "noVar": "error"
+      },
+      "complexity": {
+        "useOptionalChain": "error"
+      },
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error"
+      },
+      "nursery": {
+        "noFloatingPromises": "error",
+        "noMisusedPromises": "error",
+        "useAwaitThenable": "error",
+        "useIncludes": "error"
       }
     }
   },
@@ -81,7 +99,12 @@
     "enabled": true,
     "actions": {
       "source": {
-        "organizeImports": "on"
+        "organizeImports": {
+          "level": "on",
+          "options": {
+            "groups": [[":BUN:", ":NODE:"], ":BLANK_LINE:", ":PACKAGE:", ":BLANK_LINE:", ":PATH:"]
+          }
+        }
       }
     }
   }

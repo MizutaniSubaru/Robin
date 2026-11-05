@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
+
 import { createApp } from "../src/app.ts";
 import { type Paths, parseConfig } from "../src/config/index.ts";
 import { createLifecycle } from "../src/lifecycle.ts";
 
-test("createApp 建库迁移，stop 后数据库已关闭", async () => {
+test("createApp migrates the database and stop closes it", async () => {
   const paths: Paths = { dataDir: "", database: ":memory:", files: "", tdlib: "", logs: "" };
   const lc = createLifecycle((name, error) => {
     throw new Error(`cleanup ${name} failed: ${error}`);

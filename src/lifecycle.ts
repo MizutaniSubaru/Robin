@@ -13,7 +13,7 @@ export function createLifecycle(onError: (name: string, error: unknown) => void)
 
   return {
     defer(name, cleanup) {
-      if (stopping) throw new Error(`Cannot defer ${name}: shutting down`);
+      if (stopping !== undefined) throw new Error(`Cannot defer ${name}: shutting down`);
       stack.push({ name, cleanup });
     },
     stop() {

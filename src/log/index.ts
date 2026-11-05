@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+
 import { getRotatingFileSink } from "@logtape/file";
 import {
   configure,
@@ -15,6 +16,7 @@ import {
 } from "@logtape/logtape";
 import { getPrettyFormatter } from "@logtape/pretty";
 import { type RedactionPattern, redactByField, redactByPattern } from "@logtape/redaction";
+
 import type { Config } from "../config/index.ts";
 
 export type { Logger };

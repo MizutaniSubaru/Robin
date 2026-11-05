@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+
 import { asc, eq } from "drizzle-orm";
+
 import { type Db, openDb, runMigrations, schema } from "../src/db/index.ts";
 
 let db: Db;

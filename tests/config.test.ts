@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+
 import { parseConfig } from "../src/config/index.ts";
 
 describe("config", () => {
