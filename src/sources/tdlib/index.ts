@@ -4,18 +4,20 @@ import { join } from "node:path";
 import type { Config, Paths, TelegramEnv } from "../../config/index.ts";
 import type { Lifecycle } from "../../lifecycle.ts";
 import { getLogger } from "../../log/index.ts";
+import type * as td from "../../tdlib-api/td-api.ts";
 import { type AccountName, createTdAccount, type TdAccount } from "./account.ts";
 import type { AuthPrompter, Credentials } from "./auth.ts";
-import { resolveTdjsonPath, type TdObject } from "./ffi.ts";
+import { resolveTdjsonPath } from "./ffi.ts";
 import { createTdHub, type TdHub } from "./hub.ts";
 
+export type * as td from "../../tdlib-api/td-api.ts";
 export type { AccountIdentity, AccountName, TdAccount } from "./account.ts";
 export { AuthorizationRequiredError, type AuthPrompter } from "./auth.ts";
 export type { TdClient, UpdateListener } from "./client.ts";
 export { TdClosedError, TdError, TdTimeoutError } from "./errors.ts";
-export type { TdObject } from "./ffi.ts";
 export type { TdHub } from "./hub.ts";
 export { toServerMessageId, toTdMessageId } from "./message-id.ts";
+export { createRawUpdateWriter, type RawUpdateWriter } from "./raw-store.ts";
 export { createSendTracker, type SendTracker } from "./send-tracker.ts";
 export { createUpdateFilter, type UpdateFilter } from "./update-filter.ts";
 
@@ -44,10 +46,11 @@ export function startTdHub(
 export interface AccountSetup {
   name: AccountName;
   // For the user account; without it only an existing session works
-  prompter?: AuthPrompter;
+  prompter?: AuthPrompter | undefined;
   autoRestart: boolean;
+  onFatal(error: Error): void;
   // Defaults to data/tdlib/<name>
-  databaseDirectory?: string;
+  databaseDirectory?: string | undefined;
 }
 
 // Creates the account and registers its close on lc. Call start() after subscribing to updates
@@ -57,7 +60,7 @@ export function createAccount(
   paths: Paths,
   env: TelegramEnv,
   lc: Lifecycle,
-  { name, prompter, autoRestart, databaseDirectory = join(paths.tdlib, name) }: AccountSetup,
+  { name, prompter, autoRestart, onFatal, databaseDirectory = join(paths.tdlib, name) }: AccountSetup,
 ): TdAccount {
   let credentials: Credentials;
   if (name === "bot") {
@@ -69,7 +72,7 @@ export function createAccount(
 
   const account = createTdAccount(
     hub,
-    { name, credentials, parameters: tdlibParameters(config, env, databaseDirectory), autoRestart },
+    { name, credentials, parameters: tdlibParameters(config, env, databaseDirectory), autoRestart, onFatal },
     getLogger("tdlib", name),
   );
   lc.defer(`tdlib ${name}`, () => account.close());
@@ -77,7 +80,7 @@ export function createAccount(
 }
 
 // The auth key lives in database_directory: keep it private (0700) and out of git (data/)
-function tdlibParameters(config: Config, env: TelegramEnv, databaseDirectory: string): TdObject {
+function tdlibParameters(config: Config, env: TelegramEnv, databaseDirectory: string): td.setTdlibParameters {
   mkdirSync(databaseDirectory, { recursive: true, mode: 0o700 });
   return {
     "@type": "setTdlibParameters",

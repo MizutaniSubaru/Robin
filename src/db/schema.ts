@@ -2,6 +2,8 @@
 // other *_at columns are milliseconds.
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+import type * as td from "../tdlib-api/td-api.ts";
+
 type JsonObject = Record<string, unknown>;
 
 const nowMs = () => Date.now();
@@ -16,7 +18,6 @@ export const events = sqliteTable(
     // Monotonic timestamp assigned at commit, the ordering key
     ts: integer("ts").notNull(),
     tsSource: text("ts_source", { enum: ["local", "server"] }).notNull(),
-    // Original Telegram date, if any
     serverDate: integer("server_date"),
     chat: text("chat").notNull(),
     kind: text("kind").notNull(),
@@ -40,9 +41,8 @@ export const rawUpdates = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     account: text("account").notNull(),
-    // TDLib @type, e.g. updateNewMessage
-    type: text("type").notNull(),
-    payload: text("payload", { mode: "json" }).$type<JsonObject>().notNull(),
+    type: text("type").$type<td.Update["@type"]>().notNull(),
+    payload: text("payload", { mode: "json" }).$type<td.Update>().notNull(),
     receivedAt: integer("received_at").notNull(),
   },
   (t) => [index("raw_updates_received_at_idx").on(t.receivedAt)],
@@ -75,7 +75,6 @@ export const users = sqliteTable("users", {
   updatedAt: integer("updated_at").notNull().$defaultFn(nowMs),
 });
 
-// Downloaded media files
 export const files = sqliteTable(
   "files",
   {

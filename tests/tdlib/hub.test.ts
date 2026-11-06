@@ -9,8 +9,9 @@ import { getLogger } from "../../src/log/index.ts";
 import { AuthorizationRequiredError, authorize } from "../../src/sources/tdlib/auth.ts";
 import { createTdClient, type TdClient } from "../../src/sources/tdlib/client.ts";
 import { TdClosedError, TdError, TdTimeoutError } from "../../src/sources/tdlib/errors.ts";
-import { resolveTdjsonPath, type TdObject } from "../../src/sources/tdlib/ffi.ts";
+import { resolveTdjsonPath } from "../../src/sources/tdlib/ffi.ts";
 import { createTdHub, type TdHub, type TdHubOptions } from "../../src/sources/tdlib/hub.ts";
+import type { td } from "../../src/sources/tdlib/index.ts";
 
 const log = getLogger("test");
 const tmp = mkdtempSync(join(tmpdir(), "robin-tdlib-"));
@@ -37,7 +38,7 @@ function openHub(overrides: Partial<TdHubOptions> = {}): TdHub {
 }
 
 function openClient(h: TdHub): TdClient {
-  const client = createTdClient(h, log);
+  const client = createTdClient(h);
   clients.push(client);
   return client;
 }
@@ -84,17 +85,23 @@ describe("createTdHub", () => {
     const h = openHub();
     const result = h.execute({ "@type": "getTextEntities", text: "ping @robin" });
     expect(result["@type"]).toBe("textEntities");
-    expect(() => h.execute({ "@type": "noSuchMethod" })).toThrow(TdError);
+    expect(() => h.execute({ "@type": "noSuchMethod" } as unknown as td.Request)).toThrow(TdError);
   });
 
   test("delivers updates in order with receive timestamps", async () => {
     const client = openClient(openHub());
     const seen: { type: string; receivedAt: number }[] = [];
-    client.onUpdate((update, receivedAt) => seen.push({ type: update["@type"], receivedAt }));
+    const routingFields: string[] = [];
+    client.onUpdate((update, receivedAt) => {
+      seen.push({ type: update["@type"], receivedAt });
+      routingFields.push(...Object.keys(update).filter((key) => key === "@client_id" || key === "@extra"));
+    });
     await client.waitForAuthorizationChange(0);
 
     expect(client.authorizationState?.["@type"]).toBe("authorizationStateWaitTdlibParameters");
     expect(seen.map((u) => u.type)).toContain("updateOption");
+    // The hub routes by these and strips them; updates match td_api.tl exactly
+    expect(routingFields).toEqual([]);
     // Date.now() has ms resolution, receive timestamps µs
     const now = (Date.now() + 1) * 1000;
     for (const { receivedAt } of seen) {
@@ -138,6 +145,29 @@ describe("createTdHub", () => {
     expect(client.isOpen).toBe(false);
   });
 
+  test("a failing listener reports fatal once while the rest of the received updates are delivered", async () => {
+    const h = openHub();
+    const client = openClient(h);
+    const seen: string[] = [];
+    const other: string[] = [];
+    client.onUpdate((update) => {
+      seen.push(update["@type"]);
+      if (seen.length === 1) throw new Error("listener broke");
+    });
+    client.onUpdate((update) => other.push(update["@type"]));
+
+    // Clients are detached once the worker has handed over everything it took from TDLib
+    await client.closed;
+    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors[0]?.message).toMatch(/listener broke/);
+    // TDLib's startup burst arrives as one batch: the updates after the failing one still came through,
+    // and the other listener saw the failing update too
+    expect(seen.length).toBeGreaterThan(1);
+    expect(other).toEqual(seen);
+    expect(h.stats.clients).toBe(0);
+    fatalErrors.length = 0;
+  });
+
   test("restarts a crashed receive worker without losing the client", async () => {
     const marker = join(tmpdir(), `robin-crash-marker-${process.pid}`);
     writeFileSync(marker, "crash");
@@ -164,18 +194,26 @@ describe("authorize", () => {
   test("without a session or prompter, a user account fails clearly", async () => {
     const client = openClient(openHub());
     const dir = join(tmp, "user-db");
-    const parameters: TdObject = {
+    const parameters: td.setTdlibParameters = {
       "@type": "setTdlibParameters",
+      use_test_dc: false,
       database_directory: dir,
       files_directory: join(dir, "files"),
+      database_encryption_key: "",
+      use_file_database: false,
+      use_chat_info_database: false,
       use_message_database: false,
+      use_secret_chats: false,
       api_id: 1,
       api_hash: "0123456789abcdef0123456789abcdef",
       system_language_code: "en",
       device_model: "test",
+      system_version: "",
       application_version: "0",
     };
-    const error = await authorize(client, parameters, { kind: "user" }, log).catch((e: unknown) => e);
+    const error = await authorize(client, parameters, { kind: "user", prompter: undefined }, log).catch(
+      (e: unknown) => e,
+    );
     expect(error).toBeInstanceOf(AuthorizationRequiredError);
     expect(client.authorizationState?.["@type"]).toBe("authorizationStateWaitPhoneNumber");
   });

@@ -34,10 +34,16 @@ export interface WorkerInit extends ReceiveLoopConfig {
   generation: number;
 }
 
+export interface ReceivedItem {
+  // One td_receive result, still unparsed
+  raw: string;
+  // Wall-clock time in µs at which it left td_receive
+  receivedAt: number;
+}
+
 export type WorkerMessage =
   | { type: "ready"; generation: number }
-  // receivedAt[i] is the wall-clock time in µs at which items[i] left td_receive
-  | { type: "batch"; generation: number; items: string[]; receivedAt: number[] }
+  | { type: "batch"; generation: number; items: ReceivedItem[] }
   // The loop has exited and will not call td_receive again
   | { type: "stopped"; generation: number }
-  | { type: "fatal"; generation: number; message: string; stack?: string };
+  | { type: "fatal"; generation: number; message: string; stack: string | undefined };

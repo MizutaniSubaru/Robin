@@ -7,3 +7,6 @@ tests
 config.toml
 .env
 .env.*
+# Type-only, generated for typecheck and tests
+src/tdlib-api/td-api.ts
+src/tdlib-api/td_api.tl

@@ -15,7 +15,9 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "exactOptionalPropertyTypes": true,
     "noPropertyAccessFromIndexSignature": false
   },
-  "include": ["src", "tests", "drizzle.config.ts"]
+  "include": ["src", "tests", "scripts", "drizzle.config.ts"]
 }

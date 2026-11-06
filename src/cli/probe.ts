@@ -22,7 +22,7 @@ import {
   startTdHub,
   type TdAccount,
   TdError,
-  type TdObject,
+  type td,
   toServerMessageId,
   toTdMessageId,
 } from "../sources/tdlib/index.ts";
@@ -64,32 +64,28 @@ await runProcess("probe", async (ctx) => {
       if (!Number.isSafeInteger(serverId) || serverId <= 0) usage("--message must be a server message id");
       return probeOutbound(ctx, serverId);
     }
-    case "watch":
-      return probeWatch(ctx, Number(values.seconds));
+    case "watch": {
+      const seconds = Number(values.seconds);
+      if (!Number.isFinite(seconds) || seconds <= 0) usage("--seconds must be a positive number");
+      return probeWatch(ctx, seconds);
+    }
   }
 });
 
-async function openAccounts(
-  { config, paths, lc }: ProcessContext,
-  names: AccountName[],
-  botDatabase?: string,
-): Promise<Record<AccountName, TdAccount>> {
+// Hub first, then one started account per name, in order. Callers name exactly the accounts they use
+async function openTd(ctx: ProcessContext) {
   const env = loadTelegramEnv();
-  const hub = startTdHub(config, paths, lc, (error) => {
-    throw error;
-  });
-  const accounts = {} as Record<AccountName, TdAccount>;
-  for (const name of names) {
-    const databaseDirectory = name === "bot" ? botDatabase : undefined;
-    const account = createAccount(hub, config, paths, env, lc, {
+  const hub = startTdHub(ctx.config, ctx.paths, ctx.lc, ctx.fatal);
+  return async (name: AccountName, databaseDirectory?: string): Promise<TdAccount> => {
+    const account = createAccount(hub, ctx.config, ctx.paths, env, ctx.lc, {
       name,
       autoRestart: false,
+      onFatal: ctx.fatal,
       databaseDirectory,
     });
     await account.start();
-    accounts[name] = account;
-  }
-  return accounts;
+    return account;
+  };
 }
 
 // Runs a request and records the outcome instead of throwing
@@ -111,20 +107,20 @@ function printSteps(steps: Step[]): void {
     out(`  ${ok ? "ok  " : "FAIL"}  ${step.padEnd(width)}  ${detail}`);
 }
 
-async function describeChat(user: TdAccount): Promise<TdObject> {
-  const chat = await user.invoke({ "@type": "getChat", chat_id: chatId });
-  const type = chat.type as TdObject;
-  out(`Chat: ${chat.title} (${type["@type"]}${type.is_channel ? ", channel" : ""})`);
-  return chat;
+async function describeChat(user: TdAccount): Promise<td.ChatType> {
+  const { title, type } = await user.invoke({ "@type": "getChat", chat_id: chatId });
+  const channel = type["@type"] === "chatTypeSupergroup" && type.is_channel ? ", channel" : "";
+  out(`Chat: ${title} (${type["@type"]}${channel})`);
+  return type;
 }
 
 // T4
 async function probeIds(ctx: ProcessContext): Promise<void> {
-  const { user } = await openAccounts(ctx, ["user"]);
+  const user = await (await openTd(ctx))("user");
   await describeChat(user);
 
   // The first page often comes only from the local database, so page a few times
-  const messages: TdObject[] = [];
+  const messages: td.message[] = [];
   let fromMessageId = 0;
   for (let page = 0; page < 4 && messages.length < 20; page++) {
     const result = await user.invoke({
@@ -135,23 +131,40 @@ async function probeIds(ctx: ProcessContext): Promise<void> {
       limit: 20,
       only_local: false,
     });
-    const batch = (result.messages as TdObject[] | undefined) ?? [];
-    if (batch.length === 0) break;
+    // Only getMessages leaves nulls for missing messages; history never does
+    const batch = result.messages.map((m) => {
+      if (m === null) throw new Error("getChatHistory returned a null message");
+      return m;
+    });
+    const last = batch.at(-1);
+    if (last === undefined) break;
     messages.push(...batch);
-    fromMessageId = Number(batch.at(-1)?.id);
+    fromMessageId = last.id;
   }
 
   out(`\n${"tdlib id".padStart(18)}  ${"id / 2^20".padStart(10)}  ${"id % 2^20".padStart(9)}  link id`);
   let consistent = 0;
   for (const message of messages) {
-    const id = Number(message.id);
+    const { id } = message;
     const serverId = toServerMessageId(id);
-    let linkId = "-";
+    let linkId: string;
     try {
-      const link = await user.invoke({ "@type": "getMessageLink", chat_id: chatId, message_id: id });
-      linkId = new URL(String(link.link)).pathname.split("/").at(-1) ?? "-";
+      const link = await user.invoke({
+        "@type": "getMessageLink",
+        chat_id: chatId,
+        message_id: id,
+        media_timestamp: 0,
+        checklist_task_id: 0,
+        poll_option_id: "",
+        for_album: false,
+        in_message_thread: false,
+      });
+      const path = new URL(link.link).pathname;
+      linkId = path.slice(path.lastIndexOf("/") + 1);
     } catch (error) {
-      linkId = error instanceof TdError ? `(${error.tdMessage})` : "(error)";
+      // Some messages have no link (e.g. service messages); that is part of what the probe reports
+      if (!(error instanceof TdError)) throw error;
+      linkId = `(${error.tdMessage})`;
     }
     if (serverId !== undefined && String(serverId) === linkId) consistent++;
     out(
@@ -166,10 +179,11 @@ async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<voi
   const botDatabase = values["fresh-bot"] ? mkdtempSync(join(ctx.paths.tdlib, "probe-bot-")) : undefined;
   if (botDatabase)
     ctx.lc.defer("fresh bot database", () => rmSync(botDatabase, { recursive: true, force: true }));
-  const { user, bot } = await openAccounts(ctx, ["user", "bot"], botDatabase);
+  const open = await openTd(ctx);
+  const user = await open("user");
+  const bot = await open("bot", botDatabase);
 
-  const chat = await describeChat(user);
-  if ((chat.type as TdObject)["@type"] !== "chatTypeSupergroup") {
+  if ((await describeChat(user))["@type"] !== "chatTypeSupergroup") {
     out(
       "Warning: not a supergroup. Message ids differ between accounts in basic groups, so T2/T3 are meaningless",
     );
@@ -191,6 +205,7 @@ async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<voi
       await bot.invoke({
         "@type": "sendChatAction",
         chat_id: chatId,
+        business_connection_id: "",
         action: { "@type": "chatActionTyping" },
       });
       return "accepted";
@@ -201,22 +216,28 @@ async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<voi
       const pending = await bot.invoke({
         "@type": "sendMessage",
         chat_id: chatId,
-        reply_to: { "@type": "inputMessageReplyToMessage", message_id: targetId },
+        reply_to: {
+          "@type": "inputMessageReplyToMessage",
+          message_id: targetId,
+          checklist_task_id: 0,
+          poll_option_id: "",
+        },
         input_message_content: {
           "@type": "inputMessageText",
-          text: { "@type": "formattedText", text: `[robin probe] ${label} reply` },
+          text: { "@type": "formattedText", text: `[robin probe] ${label} reply`, entities: [] },
+          clear_draft: false,
         },
       });
-      const localHasReply = pending.reply_to !== undefined && pending.reply_to !== null;
-      const final = await sends.wait(Number(pending.id), 20_000);
-      const finalId = Number(final.id);
+      const localHasReply = pending.reply_to !== undefined;
+      const final = await sends.wait(pending.id, 20_000);
+      const finalId = final.id;
       probeMessages.push(finalId);
       // What everyone else sees, from the user account's point of view
       const seen = await retry(() =>
         user.invoke({ "@type": "getMessage", chat_id: chatId, message_id: finalId }),
       );
-      const replyTo = seen.reply_to as TdObject | undefined;
-      const kept = Number(replyTo?.message_id) === targetId;
+      const kept =
+        seen.reply_to?.["@type"] === "messageReplyToMessage" && seen.reply_to.message_id === targetId;
       return `sent as ${toServerMessageId(finalId)}; local reply_to ${localHasReply ? "set" : "missing"}; seen by user: ${kept ? "REPLY KEPT" : "REPLY DROPPED"}`;
     });
 
@@ -230,7 +251,7 @@ async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<voi
       return `accepted; reactions seen by user: ${describeReactions(seen)}`;
     });
 
-  const setReactions = (reactionTypes: TdObject[]) =>
+  const setReactions = (reactionTypes: td.ReactionType[]) =>
     bot.invoke({
       "@type": "setMessageReactions",
       chat_id: chatId,
@@ -247,7 +268,7 @@ async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<voi
   // Warm up the way Cahciua does, then repeat
   await attempt(steps, "preheat getChat", async () => {
     const c = await bot.invoke({ "@type": "getChat", chat_id: chatId });
-    return String(c.title);
+    return c.title;
   });
   await attempt(steps, "preheat getMessage", async () => {
     const m = await bot.invoke({ "@type": "getMessage", chat_id: chatId, message_id: targetId });
@@ -262,19 +283,20 @@ async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<voi
 
   if (values.keep) return;
   if (probeMessages.length > 0) {
-    await bot
-      .invoke({ "@type": "deleteMessages", chat_id: chatId, message_ids: probeMessages, revoke: true })
-      .catch((error: unknown) => out(`Could not delete probe messages: ${String(error)}`));
+    await bot.invoke({
+      "@type": "deleteMessages",
+      chat_id: chatId,
+      message_ids: probeMessages,
+      revoke: true,
+    });
   }
-  if (reacted) {
-    await setReactions([]).catch((error: unknown) => out(`Could not remove reaction: ${String(error)}`));
-  }
+  if (reacted) await setReactions([]);
   out("\nProbe messages and reactions removed (use --keep to leave them)");
 }
 
 // T5
 async function probeWatch(ctx: ProcessContext, seconds: number): Promise<void> {
-  const { user } = await openAccounts(ctx, ["user"]);
+  const user = await (await openTd(ctx))("user");
   await describeChat(user);
 
   const counts = new Map<string, number>();
@@ -300,39 +322,56 @@ async function probeWatch(ctx: ProcessContext, seconds: number): Promise<void> {
   await Bun.sleep(seconds * 1000);
 }
 
-function concernsChat(update: TdObject): boolean {
-  if (Number(update.chat_id) === chatId) return true;
-  const message = update.message as TdObject | undefined;
-  return Number(message?.chat_id) === chatId;
+// Updates name their chat either directly or through the message they carry
+function concernsChat(update: td.Update): boolean {
+  if ("chat_id" in update && update.chat_id === chatId) return true;
+  return carriedMessage(update)?.chat_id === chatId;
 }
 
-function describeUpdate(update: TdObject): string {
+// Business and group call updates carry other objects in their `message` field
+function carriedMessage(update: td.Update): td.message | undefined {
+  if (!("message" in update) || update.message?.["@type"] !== "message") return undefined;
+  return update.message;
+}
+
+function describeUpdate(update: td.Update): string {
   const parts: string[] = [];
-  const messageId = update.message_id ?? (update.message as TdObject | undefined)?.id;
-  if (messageId !== undefined) parts.push(`message ${toServerMessageId(Number(messageId)) ?? messageId}`);
-  if (Array.isArray(update.message_ids)) {
-    parts.push(`messages ${update.message_ids.map((id) => toServerMessageId(Number(id)) ?? id).join(",")}`);
-  }
-  if (update.message) parts.push(preview(update.message as TdObject));
+  const message = carriedMessage(update);
+  if ("message_id" in update) parts.push(`message ${formatMessageId(update.message_id)}`);
+  if (message) parts.push(`message ${formatMessageId(message.id)}`, preview(message));
+  if ("message_ids" in update) parts.push(`messages ${update.message_ids.map(formatMessageId).join(",")}`);
   return parts.length > 0 ? `  ${parts.join("  ")}` : "";
 }
 
-function preview(message: TdObject): string {
-  const content = message.content as TdObject | undefined;
-  const text = (content?.text as TdObject | undefined)?.text;
-  return typeof text === "string" ? JSON.stringify(text.slice(0, 40)) : String(content?.["@type"] ?? "?");
+function formatMessageId(tdMessageId: number): string {
+  const serverId = toServerMessageId(tdMessageId);
+  return serverId === undefined ? `local:${tdMessageId}` : String(serverId);
 }
 
-function describeReactions(message: TdObject): string {
-  const info = message.interaction_info as TdObject | undefined;
-  const reactions = ((info?.reactions as TdObject | undefined)?.reactions as TdObject[] | undefined) ?? [];
+function preview(message: td.message): string {
+  const { content } = message;
+  if (content["@type"] !== "messageText") return content["@type"];
+  return JSON.stringify(content.text.text.slice(0, 40));
+}
+
+function describeReactions(message: td.message): string {
+  // Both are null on a message nobody has reacted to
+  const reactions = message.interaction_info?.reactions?.reactions ?? [];
   if (reactions.length === 0) return "none";
   return reactions
-    .map(
-      (r) =>
-        `${(r.type as TdObject | undefined)?.emoji ?? "?"}x${r.total_count}${r.is_chosen ? " (chosen)" : ""}`,
-    )
+    .map((r) => `${describeReactionType(r.type)}x${r.total_count}${r.is_chosen ? " (chosen)" : ""}`)
     .join(" ");
+}
+
+function describeReactionType(type: td.ReactionType): string {
+  switch (type["@type"]) {
+    case "reactionTypeEmoji":
+      return type.emoji;
+    case "reactionTypeCustomEmoji":
+      return `custom:${type.custom_emoji_id}`;
+    case "reactionTypePaid":
+      return "paid";
+  }
 }
 
 async function retry<T>(run: () => Promise<T>, attempts = 5): Promise<T> {

@@ -10,13 +10,16 @@ test("server ids round-trip through TDLib ids beyond 32 bits", () => {
   }
 });
 
-test("local, unsent and invalid ids have no server id", () => {
+test("local, unsent and scheduled ids have no server id", () => {
   // Low 20 bits set: yet-unsent / local / scheduled flags
   expect(toServerMessageId(41 * 2 ** 20 + 1)).toBeUndefined();
   expect(toServerMessageId(5)).toBeUndefined();
-  expect(toServerMessageId(0)).toBeUndefined();
-  expect(toServerMessageId(-(2 ** 20))).toBeUndefined();
-  expect(toServerMessageId(2 ** 60)).toBeUndefined();
+});
+
+test("invalid ids throw", () => {
+  expect(() => toServerMessageId(0)).toThrow(RangeError);
+  expect(() => toServerMessageId(-(2 ** 20))).toThrow(RangeError);
+  expect(() => toServerMessageId(2 ** 60)).toThrow(RangeError);
   expect(() => toTdMessageId(0)).toThrow(RangeError);
   expect(() => toTdMessageId(1.5)).toThrow(RangeError);
 });

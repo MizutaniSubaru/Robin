@@ -44,7 +44,6 @@ export function openReadonlyDb(path: string): Db {
   return { orm: createOrm(client), client, close: () => client.close() };
 }
 
-// Apply pending migrations from migrations/
 export function runMigrations(db: Db, migrationsFolder = MIGRATIONS_DIR): void {
   migrate(db.orm, { migrationsFolder });
 }

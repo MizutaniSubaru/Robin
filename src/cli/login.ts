@@ -12,6 +12,7 @@ import {
   createAccount,
   startTdHub,
   type TdError,
+  type td,
 } from "../sources/tdlib/index.ts";
 import { ask, askSecret } from "./prompt.ts";
 
@@ -28,22 +29,21 @@ const name: AccountName = values.account;
 
 const prompter: AuthPrompter = {
   phoneNumber: () => ask("Phone number (international format, e.g. +8613800000000): "),
-  code: ({ codeType }) => ask(`Login code (${describeCodeType(codeType)}): `),
+  code: ({ type }) => ask(`Login code (${describeCodeType(type)}): `),
   password: (hint) => askSecret(hint ? `2FA password (hint: ${hint}): ` : "2FA password: "),
   emailAddress: () => ask("Email address for login codes: "),
   emailCode: () => ask("Code sent to your email: "),
   rejected: (error: TdError) => process.stdout.write(`Rejected: ${error.tdMessage}, try again\n`),
 };
 
-await runProcess("login", async ({ config, paths, lc, log }) => {
+await runProcess("login", async ({ config, paths, lc, log, fatal }) => {
   const env = loadTelegramEnv();
-  const hub = startTdHub(config, paths, lc, (error) => {
-    throw error;
-  });
+  const hub = startTdHub(config, paths, lc, fatal);
   const account = createAccount(hub, config, paths, env, lc, {
     name,
     prompter: name === "user" ? prompter : undefined,
     autoRestart: false,
+    onFatal: fatal,
   });
   await account.start();
   const { username, displayName, userId } = account.me;
@@ -51,8 +51,8 @@ await runProcess("login", async ({ config, paths, lc, log }) => {
   process.stdout.write(`Logged in as ${displayName}${username ? ` (@${username})` : ""}, id ${userId}\n`);
 });
 
-function describeCodeType(type: string): string {
-  switch (type) {
+function describeCodeType(type: td.AuthenticationCodeType): string {
+  switch (type["@type"]) {
     case "authenticationCodeTypeTelegramMessage":
       return "sent to your Telegram app";
     case "authenticationCodeTypeSms":
@@ -64,6 +64,6 @@ function describeCodeType(type: string): string {
     case "authenticationCodeTypeFragment":
       return "sent via Fragment";
     default:
-      return type.replace("authenticationCodeType", "");
+      return type["@type"].replace("authenticationCodeType", "");
   }
 }

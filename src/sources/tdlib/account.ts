@@ -1,8 +1,8 @@
 import type { Logger } from "../../log/index.ts";
+import type * as td from "../../tdlib-api/td-api.ts";
 import { AuthorizationRequiredError, authorize, type Credentials } from "./auth.ts";
-import { createTdClient, type TdClient, type UpdateListener } from "./client.ts";
+import { createTdClient, notifyListeners, type TdClient, type UpdateListener } from "./client.ts";
 import { TdClosedError } from "./errors.ts";
-import type { TdObject } from "./ffi.ts";
 import type { SendOptions, TdHub } from "./hub.ts";
 
 export type AccountName = "user" | "bot";
@@ -10,15 +10,17 @@ export type AccountName = "user" | "bot";
 export interface AccountOptions {
   name: AccountName;
   credentials: Credentials;
-  // The setTdlibParameters request
-  parameters: TdObject;
+  parameters: td.setTdlibParameters;
   // Recreate the client when TDLib closes it unexpectedly. Off for one-shot CLI commands
   autoRestart: boolean;
+  // Called when the account is gone for good (session terminated, can no longer authorize,
+  // closed without autoRestart); the caller should exit
+  onFatal(error: Error): void;
 }
 
 export interface AccountIdentity {
   userId: number;
-  username?: string;
+  username: string | undefined;
   displayName: string;
   isBot: boolean;
 }
@@ -30,7 +32,7 @@ export interface TdAccount {
   readonly isReady: boolean;
   // Register before start() to also see the startup updates
   onUpdate(listener: UpdateListener): () => void;
-  invoke(request: TdObject, options?: SendOptions): Promise<TdObject>;
+  invoke<R extends td.Request>(request: R, options?: SendOptions): Promise<td.ResultOf<R>>;
   start(): Promise<void>;
   close(): Promise<void>;
 }
@@ -51,17 +53,9 @@ export function createTdAccount(hub: TdHub, options: AccountOptions, log: Logger
   let restartTimer: Timer | undefined;
 
   async function connect(credentials: Credentials): Promise<void> {
-    const next = createTdClient(hub, log);
+    const next = createTdClient(hub);
     client = next;
-    next.onUpdate((update, receivedAt) => {
-      for (const listener of listeners) {
-        try {
-          listener(update, receivedAt);
-        } catch (error) {
-          log.error("Update listener failed on {type}", { type: update["@type"], error });
-        }
-      }
-    });
+    next.onUpdate((update, receivedAt) => notifyListeners(listeners, update, receivedAt));
     void next.closed.then(() => onClientClosed(next));
 
     let me: AccountIdentity;
@@ -85,14 +79,13 @@ export function createTdAccount(hub: TdHub, options: AccountOptions, log: Logger
   // Guards against swapped database directories: the user slot must hold a user, the bot slot a bot
   async function verifyIdentity(target: TdClient): Promise<AccountIdentity> {
     const me = await target.invoke({ "@type": "getMe" });
-    const isBot = (me.type as TdObject | undefined)?.["@type"] === "userTypeBot";
+    const isBot = me.type["@type"] === "userTypeBot";
     if (isBot !== (name === "bot")) {
       throw new Error(`Account ${name} is logged in as a ${isBot ? "bot" : "user"}`);
     }
-    const usernames = me.usernames as { active_usernames?: string[] } | undefined;
     return {
-      userId: Number(me.id),
-      username: usernames?.active_usernames?.[0],
+      userId: me.id,
+      username: me.usernames?.active_usernames[0],
       displayName: [me.first_name, me.last_name].filter(Boolean).join(" "),
       isBot,
     };
@@ -105,13 +98,13 @@ export function createTdAccount(hub: TdHub, options: AccountOptions, log: Logger
     if (closing || !wasReady) return;
 
     if (closedClient.loggedOut) {
-      log.error("{account} session was terminated; log in again with `bun run login --account {account}`", {
-        account: name,
-      });
+      options.onFatal(
+        new Error(`${name} session was terminated; log in again with \`bun run login --account ${name}\``),
+      );
       return;
     }
     if (!options.autoRestart) {
-      log.error("{account} client closed unexpectedly", { account: name });
+      options.onFatal(new Error(`${name} client closed unexpectedly`));
       return;
     }
     scheduleRestart();
@@ -128,16 +121,15 @@ export function createTdAccount(hub: TdHub, options: AccountOptions, log: Logger
       if (closing) return;
       // Never prompt during a restart: only the existing session or the bot token can be used
       const credentials: Credentials =
-        options.credentials.kind === "bot" ? options.credentials : { kind: "user" };
+        options.credentials.kind === "bot" ? options.credentials : { kind: "user", prompter: undefined };
       connect(credentials).catch((error: unknown) => {
+        // Shutdown closes the client mid-authorization, so the failure is expected
         if (closing) return;
         if (error instanceof AuthorizationRequiredError) {
-          log.error("{account} can no longer authorize: {message}", {
-            account: name,
-            message: error.message,
-          });
+          options.onFatal(error);
           return;
         }
+        // Anything else (network, TDLib restarting) may pass, so keep retrying with backoff
         log.error("{account} reconnect failed", { account: name, error });
         scheduleRestart();
       });

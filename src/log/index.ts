@@ -24,7 +24,6 @@ export { withContext };
 
 const REDACTED = "[REDACTED]";
 
-// Structured properties whose names match these are redacted
 const SENSITIVE_FIELDS = [
   /pass(?:code|phrase|word)/i,
   /secret/i,
@@ -36,7 +35,7 @@ const SENSITIVE_FIELDS = [
   /^code$/i,
 ];
 
-// Patterns redacted from formatted log text
+// Matched against the formatted text, so secrets embedded in messages are caught too
 const SENSITIVE_PATTERNS: RedactionPattern[] = [
   // Telegram bot token
   { pattern: /\b\d{6,}:[\w-]{30,}\b/g, replacement: REDACTED },
@@ -46,15 +45,12 @@ const SENSITIVE_PATTERNS: RedactionPattern[] = [
   { pattern: /\+\d{7,15}\b/g, replacement: REDACTED },
 ];
 
-// Show structured properties (errors, ids) below each console line
 const prettyFormatter = getPrettyFormatter({ properties: true });
 
-// getLogger("tdlib") -> robin.tdlib
 export function getLogger(...category: string[]): Logger {
   return getLogTapeLogger(["robin", ...category]);
 }
 
-// Use withContext({ chat, run_id }, fn) to attach fields to every log inside fn
 export async function setupLogging(config: Config["log"], logDir: string): Promise<void> {
   const sinks: Record<string, Sink> = {};
 
@@ -95,11 +91,11 @@ export async function setupLogging(config: Config["log"], logDir: string): Promi
     reset: true,
     sinks,
     loggers,
+    // Required for withContext()
     contextLocalStorage: new AsyncLocalStorage<Record<string, unknown>>(),
   });
 }
 
-// Flush and close all sinks before exit
 export async function shutdownLogging(): Promise<void> {
   await dispose();
 }

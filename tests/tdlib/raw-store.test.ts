@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { asc } from "drizzle-orm";
 
+import { type Db, openDb, runMigrations, schema } from "../../src/db/index.ts";
+import { getLogger } from "../../src/log/index.ts";
 import {
   createRawUpdateWriter,
   type RawUpdateWriter,
   type RawUpdateWriterOptions,
-} from "../../src/core/store/raw-updates.ts";
-import { type Db, openDb, runMigrations, schema } from "../../src/db/index.ts";
-import { getLogger } from "../../src/log/index.ts";
+} from "../../src/sources/tdlib/raw-store.ts";
+import { update } from "../fixtures/td.ts";
 
 let db: Db;
 let fatal: Error[];
@@ -47,7 +48,7 @@ function fillDisk(): () => void {
   return () => db.client.run("PRAGMA max_page_count = 1073741823");
 }
 
-const big = (i: number) => ({ "@type": "updateNewMessage", n: i, blob: "x".repeat(20_000) });
+const big = (i: number) => update({ "@type": "updateNewMessage", n: i, blob: "x".repeat(20_000) });
 
 async function until(check: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -61,7 +62,7 @@ describe("createRawUpdateWriter", () => {
   test("writes a burst of pushes in arrival order after the current task", async () => {
     const w = writer();
     for (let i = 0; i < 1200; i++) {
-      w.push(i % 2 ? "bot" : "user", { "@type": "updateOption", "@client_id": 1, name: `n${i}` }, 1000 + i);
+      w.push(i % 2 ? "bot" : "user", update({ "@type": "updateOption", name: `n${i}` }), 1000 + i);
     }
     expect(rows()).toHaveLength(0);
 
@@ -74,47 +75,24 @@ describe("createRawUpdateWriter", () => {
       payload: { "@type": "updateOption", name: "n0" },
       receivedAt: 1000,
     });
-    // @client_id is process-local, the account column replaces it
-    expect(stored[0]?.payload).not.toHaveProperty("@client_id");
     expect(stored.map((r) => r.receivedAt)).toEqual(Array.from({ length: 1200 }, (_, i) => 1000 + i));
   });
 
-  test("close writes what is buffered and refuses later pushes", () => {
+  test("close writes what is buffered and rejects later pushes", () => {
     const w = writer();
-    w.push("user", { "@type": "updateConnectionState" }, 1);
+    w.push("user", update({ "@type": "updateConnectionState" }), 1);
     w.close();
     expect(rows()).toHaveLength(1);
-    expect(w.push("user", { "@type": "updateConnectionState" }, 2)).toBe(false);
+    expect(() => w.push("user", update({ "@type": "updateConnectionState" }), 2)).toThrow(/after close/);
   });
 
-  test("close on a full disk does not schedule retries", async () => {
+  test("close on a full disk throws and does not schedule retries", async () => {
     const w = writer({ maxAttempts: 2 });
     fillDisk();
     w.push("user", big(1), 1);
-    w.close();
+    expect(() => w.close()).toThrow(/1 raw updates were not stored/);
     await Bun.sleep(50);
     expect(w.buffered).toBe(1);
-    expect(fatal).toHaveLength(0);
-  });
-
-  test("rejects malformed input at push", () => {
-    const w = writer();
-    expect(w.push("", { "@type": "updateNewMessage" }, 1)).toBe(false);
-    expect(w.push("user", {} as never, 1)).toBe(false);
-    expect(w.push("user", { "@type": "" }, 1)).toBe(false);
-    expect(w.push("user", null as never, 1)).toBe(false);
-    expect(w.push("user", { "@type": "updateNewMessage" }, Number.NaN)).toBe(false);
-    expect(w.push("user", { "@type": "updateNewMessage" }, 0)).toBe(false);
-    expect(w.buffered).toBe(0);
-  });
-
-  test("drops only the row that cannot be stored", () => {
-    const w = writer();
-    w.push("user", { "@type": "updateNewMessage", n: 1 }, 1);
-    w.push("user", { "@type": "updateNewMessage", n: 2n }, 2);
-    w.push("user", { "@type": "updateNewMessage", n: 3 }, 3);
-    w.close();
-    expect(rows().map((r) => r.receivedAt)).toEqual([1, 3]);
     expect(fatal).toHaveLength(0);
   });
 
@@ -134,32 +112,28 @@ describe("createRawUpdateWriter", () => {
     expect(fatal).toHaveLength(0);
   });
 
-  test("a full disk is not mistaken for bad rows", () => {
-    const w = writer();
-    w.push("user", { "@type": "updateNewMessage", n: 1n }, 1);
-    w.push("user", big(2), 2);
-    fillDisk();
-    w.close();
-    // The BigInt row sends the batch to row-by-row mode, where the full disk rolls everything back
-    expect(w.buffered).toBe(2);
-  });
-
   test("reports fatal after the retry limit and keeps the rows", async () => {
     const w = writer({ maxAttempts: 3 });
-    fillDisk();
+    const freeDisk = fillDisk();
     w.push("user", big(1), 1);
     await until(() => fatal.length > 0);
     await Bun.sleep(50);
     expect(fatal).toHaveLength(1);
     expect(fatal[0]?.message).toMatch(/3 times in a row/);
     expect(w.buffered).toBe(1);
+    // Later pushes stay buffered and do not report again
+    w.push("user", big(2), 2);
+    await Bun.sleep(50);
+    expect(fatal).toHaveLength(1);
+    expect(w.buffered).toBe(2);
+    freeDisk();
   });
 
-  test("reports fatal when the buffer is full", () => {
+  test("push throws when the buffer is full", () => {
     const w = writer({ maxBuffered: 2 });
-    expect(w.push("user", { "@type": "updateNewMessage" }, 1)).toBe(true);
-    expect(w.push("user", { "@type": "updateNewMessage" }, 2)).toBe(true);
-    expect(w.push("user", { "@type": "updateNewMessage" }, 3)).toBe(false);
-    expect(fatal).toHaveLength(1);
+    w.push("user", update({ "@type": "updateNewMessage" }), 1);
+    w.push("user", update({ "@type": "updateNewMessage" }), 2);
+    expect(() => w.push("user", update({ "@type": "updateNewMessage" }), 3)).toThrow(/buffer full/);
+    expect(w.buffered).toBe(2);
   });
 });

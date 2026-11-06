@@ -8,14 +8,16 @@
     "dev": "bun --watch src/main.ts",
     "login": "bun src/cli/login.ts",
     "probe": "bun src/cli/probe.ts",
-    "test": "bun test",
-    "typecheck": "tsc --noEmit",
+    "tdlib:types": "bun scripts/gen-td-api.ts",
+    "test": "bun run tdlib:types && bun test",
+    "typecheck": "bun run tdlib:types && tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:check": "drizzle-kit check",
     "db:studio": "drizzle-kit studio",
     "lint": "biome check",
     "lint:fix": "biome check --write",
-    "format": "biome format --write"
+    "format": "biome format --write",
+    "check": "bun run typecheck && biome check && bun test"
   },
   "dependencies": {
     "@logtape/file": "^2.4.2",

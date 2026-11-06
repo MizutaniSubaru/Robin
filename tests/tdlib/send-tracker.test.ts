@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
 import type { UpdateListener } from "../../src/sources/tdlib/client.ts";
-import type { TdObject } from "../../src/sources/tdlib/ffi.ts";
+import type { td } from "../../src/sources/tdlib/index.ts";
 import { createSendTracker } from "../../src/sources/tdlib/send-tracker.ts";
+import { update } from "../fixtures/td.ts";
 
 function fakeUpdates() {
   const listeners = new Set<UpdateListener>();
@@ -11,8 +12,8 @@ function fakeUpdates() {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    emit(update: TdObject) {
-      for (const listener of listeners) listener(update, 0);
+    emit(value: td.Update) {
+      for (const listener of listeners) listener(value, 0);
     },
     get size() {
       return listeners.size;
@@ -20,11 +21,12 @@ function fakeUpdates() {
   };
 }
 
-const succeeded = (tempId: number, finalId: number) => ({
-  "@type": "updateMessageSendSucceeded",
-  old_message_id: tempId,
-  message: { "@type": "message", id: finalId },
-});
+const succeeded = (tempId: number, finalId: number) =>
+  update({
+    "@type": "updateMessageSendSucceeded",
+    old_message_id: tempId,
+    message: { "@type": "message", id: finalId },
+  });
 
 describe("createSendTracker", () => {
   test("confirmation delivered in the same batch as the sendMessage response is not lost", async () => {
@@ -33,12 +35,12 @@ describe("createSendTracker", () => {
 
     // The hub resolves the request, then synchronously dispatches the next item of the batch
     // before the awaiting caller resumes
-    const response = new Promise<TdObject>((resolve) => {
-      resolve({ "@type": "message", id: 7 });
+    const response = new Promise<{ id: number }>((resolve) => {
+      resolve({ id: 7 });
       updates.emit(succeeded(7, 3 << 20));
     });
     const pending = await response;
-    const final = await tracker.wait(Number(pending.id), 1000);
+    const final = await tracker.wait(pending.id, 1000);
     expect(final.id).toBe(3 << 20);
   });
 
@@ -54,12 +56,14 @@ describe("createSendTracker", () => {
     const updates = fakeUpdates();
     const tracker = createSendTracker(updates.onUpdate);
     const waiting = tracker.wait(9, 1000);
-    updates.emit({
-      "@type": "updateMessageSendFailed",
-      old_message_id: 9,
-      message: { "@type": "message", id: 9 },
-      error: { "@type": "error", code: 400, message: "CHAT_WRITE_FORBIDDEN" },
-    });
+    updates.emit(
+      update({
+        "@type": "updateMessageSendFailed",
+        old_message_id: 9,
+        message: { "@type": "message", id: 9 },
+        error: { "@type": "error", code: 400, message: "CHAT_WRITE_FORBIDDEN" },
+      }),
+    );
     await expect(waiting).rejects.toThrow("CHAT_WRITE_FORBIDDEN");
   });
 

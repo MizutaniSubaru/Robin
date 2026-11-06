@@ -1,7 +1,7 @@
 # Runs the TypeScript sources directly with Bun, no compile step.
 # TDLib comes from prebuilt-tdlib (pinned in package.json, statically linked against OpenSSL and zlib,
 # needs glibc >= 2.22). bun install picks the build for the image's architecture.
-# If TDLib ever needs patching (reply_to or reactions on unseen messages), add a build stage and set tdlib.library_path
+# The bot must run with privacy mode off: TDLib drops reply_to and rejects reactions for messages it never received
 FROM oven/bun:1.3.11-slim
 
 WORKDIR /app

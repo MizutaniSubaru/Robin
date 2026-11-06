@@ -6,7 +6,6 @@ import { type Config, ConfigSchema } from "./schema.ts";
 
 export { type Config, ConfigSchema, LogLevel } from "./schema.ts";
 
-// Runtime paths derived from data_dir
 export interface Paths {
   dataDir: string;
   database: string;
@@ -36,7 +35,6 @@ export function parseConfig(raw: unknown): Config {
   return result.data;
 }
 
-// Load the TOML config from $ROBIN_CONFIG or ./config.toml
 export async function loadConfig(path = Bun.env.ROBIN_CONFIG ?? "config.toml"): Promise<Config> {
   const file = Bun.file(path);
   if (!(await file.exists())) {
@@ -48,6 +46,7 @@ export async function loadConfig(path = Bun.env.ROBIN_CONFIG ?? "config.toml"): 
 const TelegramEnvSchema = z.object({
   TELEGRAM_API_ID: z.coerce.number().int().positive(),
   TELEGRAM_API_HASH: z.string().regex(/^[0-9a-f]{32}$/i, "must be 32 hex characters"),
+  // `TELEGRAM_BOT_TOKEN=` in .env arrives as "", which means unset, not an invalid token
   TELEGRAM_BOT_TOKEN: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z
@@ -61,7 +60,7 @@ const TelegramEnvSchema = z.object({
 export interface TelegramEnv {
   apiId: number;
   apiHash: string;
-  botToken?: string;
+  botToken: string | undefined;
 }
 
 export function loadTelegramEnv(env: Record<string, string | undefined> = Bun.env): TelegramEnv {

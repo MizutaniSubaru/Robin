@@ -20,6 +20,7 @@ export function createLifecycle(onError: (name: string, error: unknown) => void)
       // Every caller awaits the same promise, so concurrent stops run once
       stopping ??= (async () => {
         for (let entry = stack.pop(); entry; entry = stack.pop()) {
+          // One failed cleanup must not leave the resources below it open
           try {
             await entry.cleanup();
           } catch (error) {

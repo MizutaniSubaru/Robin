@@ -1,66 +1,62 @@
-import type { Logger } from "../../log/index.ts";
-import { TdClosedError } from "./errors.ts";
-import type { TdObject } from "./ffi.ts";
+import type * as td from "../../tdlib-api/td-api.ts";
+import { TdClosedError, TdTimeoutError } from "./errors.ts";
 import type { SendOptions, TdHub } from "./hub.ts";
 
-export type UpdateListener = (update: TdObject, receivedAt: number) => void;
+export type UpdateListener = (update: td.Update, receivedAt: number) => void;
 
 export interface TdClient {
   readonly id: number;
   // Resolves on authorizationStateClosed, a close timeout, or the hub stopping
   readonly closed: Promise<void>;
-  readonly authorizationState: TdObject | undefined;
+  readonly authorizationState: td.AuthorizationState | undefined;
   // Bumped on every authorization state update, including repeats of the same state
   readonly authorizationVersion: number;
   // The session was terminated (logOut, or revoked from another device): it cannot come back by itself
   readonly loggedOut: boolean;
   readonly isOpen: boolean;
-  invoke(request: TdObject, options?: SendOptions): Promise<TdObject>;
+  invoke<R extends td.Request>(request: R, options?: SendOptions): Promise<td.ResultOf<R>>;
   onUpdate(listener: UpdateListener): () => void;
   // Resolves once an authorization update newer than `version` has arrived (or the client closed)
   waitForAuthorizationChange(version: number): Promise<void>;
-  // Asks TDLib to flush and close; resolves on authorizationStateClosed or after a timeout
+  // Asks TDLib to flush and close; resolves on authorizationStateClosed, throws TdTimeoutError after timeoutMs
   close(timeoutMs?: number): Promise<void>;
 }
 
 const CLOSE_TIMEOUT_MS = 15_000;
 
 // One TDLib instance. Lives until authorizationStateClosed; after that a new client is needed
-export function createTdClient(hub: TdHub, log: Logger): TdClient {
+export function createTdClient(hub: TdHub): TdClient {
   const listeners = new Set<UpdateListener>();
   const authWaiters = new Set<() => void>();
   const { promise: closed, resolve: markClosed } = Promise.withResolvers<void>();
-  let authState: TdObject | undefined;
+  let authState: td.AuthorizationState | undefined;
   let authVersion = 0;
   let sawLoggingOut = false;
   let isClosed = false;
 
   const id = hub.registerClient({ deliver: handle, detached: finish });
 
-  function invoke(request: TdObject, options?: SendOptions): Promise<TdObject> {
+  function invoke<R extends td.Request>(request: R, options?: SendOptions): Promise<td.ResultOf<R>> {
     if (isClosed) return Promise.reject(new TdClosedError(`Client ${id} is closed`));
     return hub.send(id, request, options);
   }
 
-  function handle(message: TdObject, receivedAt: number): void {
-    const isAuthUpdate = message["@type"] === "updateAuthorizationState";
-    if (isAuthUpdate) {
-      authState = message.authorization_state as TdObject;
+  function handle(update: td.Update, receivedAt: number): void {
+    const auth = update["@type"] === "updateAuthorizationState" ? update.authorization_state : undefined;
+    if (auth) {
+      authState = auth;
       authVersion++;
-      if (authState["@type"] === "authorizationStateLoggingOut") sawLoggingOut = true;
+      if (auth["@type"] === "authorizationStateLoggingOut") sawLoggingOut = true;
     }
 
-    for (const listener of listeners) {
-      try {
-        listener(message, receivedAt);
-      } catch (error) {
-        log.error("Update listener failed on {type}", { type: message["@type"], error });
+    try {
+      notifyListeners(listeners, update, receivedAt);
+    } finally {
+      // Authorization tracking must not depend on listeners: close() and authorize() wait on it
+      if (auth) {
+        if (auth["@type"] === "authorizationStateClosed") finish("authorizationStateClosed");
+        for (const waiter of [...authWaiters]) waiter();
       }
-    }
-
-    if (isAuthUpdate) {
-      if (authState?.["@type"] === "authorizationStateClosed") finish("authorizationStateClosed");
-      for (const waiter of [...authWaiters]) waiter();
     }
   }
 
@@ -72,10 +68,9 @@ export function createTdClient(hub: TdHub, log: Logger): TdClient {
     markClosed();
   }
 
-  // TDLib creates the instance lazily and stays silent until it gets its first request
-  invoke({ "@type": "getOption", name: "version" }).catch((error: unknown) => {
-    log.warn("Initial request failed", { error });
-  });
+  // TDLib creates the instance lazily and stays silent until it gets its first request.
+  // The client may be closed before the answer arrives; that is the only failure to expect
+  invoke({ "@type": "getOption", name: "version" }).catch(ignoreClosed);
 
   return {
     id,
@@ -111,14 +106,40 @@ export function createTdClient(hub: TdHub, log: Logger): TdClient {
     },
     async close(timeoutMs = CLOSE_TIMEOUT_MS) {
       if (isClosed) return;
-      invoke({ "@type": "close" }).catch((error: unknown) => {
-        if (!(error instanceof TdClosedError)) log.warn("close request failed", { error });
-      });
-      const done = await Promise.race([closed.then(() => true), Bun.sleep(timeoutMs).then(() => false)]);
+      // authorizationStateClosed can unregister the client before the close request is answered
+      const request = invoke({ "@type": "close" }).catch(ignoreClosed);
+      const done = await Promise.race([
+        Promise.all([request, closed]).then(() => true),
+        Bun.sleep(timeoutMs).then(() => false),
+      ]);
       if (!done) {
-        log.error("Client {clientId} did not close within {timeoutMs} ms", { clientId: id, timeoutMs });
         finish("close timed out");
+        throw new TdTimeoutError("close", timeoutMs);
       }
     },
   };
+}
+
+function ignoreClosed(error: unknown): void {
+  if (!(error instanceof TdClosedError)) throw error;
+}
+
+// Every listener sees the update even when an earlier one throws; the failure is rethrown afterwards
+// so the hub still reports it
+export function notifyListeners(
+  listeners: Iterable<UpdateListener>,
+  update: td.Update,
+  receivedAt: number,
+): void {
+  const errors: unknown[] = [];
+  for (const listener of listeners) {
+    try {
+      listener(update, receivedAt);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1)
+    throw new AggregateError(errors, `${errors.length} listeners failed on ${update["@type"]}`);
 }

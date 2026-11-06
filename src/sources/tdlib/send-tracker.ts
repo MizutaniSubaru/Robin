@@ -1,7 +1,8 @@
+import type * as td from "../../tdlib-api/td-api.ts";
 import type { UpdateListener } from "./client.ts";
-import type { TdObject } from "./ffi.ts";
+import { TdError } from "./errors.ts";
 
-type Outcome = { ok: true; message: TdObject } | { ok: false; error: Error };
+type Outcome = { ok: true; message: td.message } | { ok: false; error: Error };
 
 interface Waiter {
   settle(outcome: Outcome): void;
@@ -11,7 +12,7 @@ export interface SendTracker {
   // Resolves with the final message once TDLib confirms the send of the temporary message tempId.
   // Safe to call after the confirmation already arrived: the hub delivers a whole worker batch
   // synchronously, so updateMessageSendSucceeded can land before the caller's await resumes
-  wait(tempId: number, timeoutMs: number): Promise<TdObject>;
+  wait(tempId: number, timeoutMs: number): Promise<td.message>;
   dispose(): void;
 }
 
@@ -24,16 +25,15 @@ export function createSendTracker(onUpdate: (listener: UpdateListener) => () => 
   const unclaimed = new Map<number, Outcome>();
 
   const unsubscribe = onUpdate((update) => {
-    const type = update["@type"];
-    if (type !== "updateMessageSendSucceeded" && type !== "updateMessageSendFailed") return;
-    const tempId = Number(update.old_message_id);
-    const outcome: Outcome =
-      type === "updateMessageSendSucceeded"
-        ? { ok: true, message: update.message as TdObject }
-        : {
-            ok: false,
-            error: new Error(String((update.error as TdObject | undefined)?.message ?? "send failed")),
-          };
+    let outcome: Outcome;
+    if (update["@type"] === "updateMessageSendSucceeded") {
+      outcome = { ok: true, message: update.message };
+    } else if (update["@type"] === "updateMessageSendFailed") {
+      outcome = { ok: false, error: new TdError(update.error.code, update.error.message, "sendMessage") };
+    } else {
+      return;
+    }
+    const tempId = update.old_message_id;
 
     const waiter = waiters.get(tempId);
     if (waiter) {
@@ -56,7 +56,7 @@ export function createSendTracker(onUpdate: (listener: UpdateListener) => () => 
         return early.ok ? Promise.resolve(early.message) : Promise.reject(early.error);
       }
       if (waiters.has(tempId)) return Promise.reject(new Error(`Already waiting for message ${tempId}`));
-      return new Promise<TdObject>((resolve, reject) => {
+      return new Promise<td.message>((resolve, reject) => {
         const timer = setTimeout(() => {
           waiters.delete(tempId);
           reject(new Error(`No send confirmation for message ${tempId} in ${timeoutMs} ms`));

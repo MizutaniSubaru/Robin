@@ -1,11 +1,19 @@
 import type { Logger } from "../../log/index.ts";
+import type * as td from "../../tdlib-api/td-api.ts";
 import { TdClosedError, TdError, TdTimeoutError } from "./errors.ts";
-import { openTdJson, type TdObject } from "./ffi.ts";
-import { CTRL_SLOTS, Ctrl, type ReceiveLoopConfig, type WorkerInit, type WorkerMessage } from "./protocol.ts";
+import { openTdJson, parseTdJson, type TdEnvelope } from "./ffi.ts";
+import {
+  CTRL_SLOTS,
+  Ctrl,
+  type ReceivedItem,
+  type ReceiveLoopConfig,
+  type WorkerInit,
+  type WorkerMessage,
+} from "./protocol.ts";
 
 export interface ClientSink {
   // Every update for this client, in TDLib order
-  deliver(message: TdObject, receivedAt: number): void;
+  deliver(update: td.Update, receivedAt: number): void;
   // The hub dropped the client without TDLib closing it (hub stopped)
   detached(reason: string): void;
 }
@@ -16,8 +24,8 @@ export interface TdHubOptions {
   logVerbosity: number;
   logFile: string;
   log: Logger;
-  // Called once when receiving cannot be recovered in-process (stalled inside TDLib, crash loop).
-  // The caller should exit and let the process supervisor restart Robin
+  // Called once when receiving cannot go on (stalled inside TDLib, crash loop, a client failed to
+  // handle an update). The caller should exit and let the process supervisor restart Robin
   onFatal(error: Error): void;
   loop?: Partial<ReceiveLoopConfig>;
   // Default per-request timeout; 0 disables it
@@ -45,9 +53,9 @@ export interface TdHub {
   registerClient(sink: ClientSink): number;
   // Called once the client reported authorizationStateClosed; TDLib has destroyed the instance
   unregisterClient(clientId: number, reason: string): void;
-  send(clientId: number, request: TdObject, options?: SendOptions): Promise<TdObject>;
+  send<R extends td.Request>(clientId: number, request: R, options?: SendOptions): Promise<td.ResultOf<R>>;
   // Synchronous TDLib call; throws TdError when TDLib answers with an error
-  execute(request: TdObject): TdObject;
+  execute<R extends td.Request>(request: R): td.ResultOf<R>;
   // Clients should be closed first: once receiving stops, their final updates are lost
   stop(): Promise<void>;
 }
@@ -55,7 +63,7 @@ export interface TdHub {
 interface Pending {
   clientId: number;
   method: string;
-  resolve(result: TdObject): void;
+  resolve(result: TdEnvelope): void;
   reject(error: Error): void;
   timer?: Timer;
 }
@@ -100,7 +108,7 @@ export function createTdHub(options: TdHubOptions): TdHub {
   const loop: ReceiveLoopConfig = { ...DEFAULT_LOOP, ...options.loop };
   const clients = new Map<number, ClientSink>();
   const pending = new Map<string, Pending>();
-  const crashes: number[] = [];
+  let crashes: number[] = [];
   let current: WorkerHandle | undefined;
   let generation = 0;
   let restarts = 0;
@@ -112,14 +120,19 @@ export function createTdHub(options: TdHubOptions): TdHub {
   let stopRequested = false;
   let failed = false;
 
-  let td: ReturnType<typeof openTdJson>;
+  let tdjson: ReturnType<typeof openTdJson>;
   try {
-    td = openTdJson(options.libraryPath);
+    tdjson = openTdJson(options.libraryPath);
     // Before any client exists, so TDLib never writes to stderr
     execute({ "@type": "setLogVerbosityLevel", new_verbosity_level: options.logVerbosity });
     execute({
       "@type": "setLogStream",
-      log_stream: { "@type": "logStreamFile", path: options.logFile, max_file_size: 50 * 1024 * 1024 },
+      log_stream: {
+        "@type": "logStreamFile",
+        path: options.logFile,
+        max_file_size: 50 * 1024 * 1024,
+        redirect_stderr: false,
+      },
     });
   } catch (error) {
     hubOpen = false;
@@ -130,18 +143,16 @@ export function createTdHub(options: TdHubOptions): TdHub {
   const watchdog = setInterval(checkHeartbeat, WATCHDOG_INTERVAL_MS);
   watchdog.unref();
 
-  function execute(request: TdObject): TdObject {
-    const result = td.execute(request);
+  function execute<R extends td.Request>(request: R): td.ResultOf<R> {
+    const result = tdjson.execute(request);
     if (result === null) throw new TdError(0, "no result", request["@type"]);
-    if (result["@type"] === "error") {
-      throw new TdError(Number(result.code), String(result.message), request["@type"]);
-    }
-    return result;
+    if (result["@type"] === "error") throw toTdError(result as td.error, request["@type"]);
+    return result as unknown as td.ResultOf<R>;
   }
 
   function registerClient(sink: ClientSink): number {
     if (stopRequested) throw new TdClosedError("TDLib is stopping");
-    const clientId = td.createClientId();
+    const clientId = tdjson.createClientId();
     clients.set(clientId, sink);
     return clientId;
   }
@@ -151,7 +162,11 @@ export function createTdHub(options: TdHubOptions): TdHub {
     failPending(clientId, new TdClosedError(`Client ${clientId} closed: ${reason}`));
   }
 
-  function send(clientId: number, request: TdObject, { timeoutMs }: SendOptions = {}): Promise<TdObject> {
+  function send<R extends td.Request>(
+    clientId: number,
+    request: R,
+    { timeoutMs }: SendOptions = {},
+  ): Promise<td.ResultOf<R>> {
     const method = request["@type"];
     if (stopRequested) {
       return Promise.reject(new TdClosedError(`Cannot send ${method}: TDLib is stopping`));
@@ -162,8 +177,14 @@ export function createTdHub(options: TdHubOptions): TdHub {
 
     const extra = String(++nextExtra);
     const timeout = timeoutMs ?? options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-    return new Promise<TdObject>((resolve, reject) => {
-      const entry: Pending = { clientId, method, resolve, reject };
+    return new Promise<td.ResultOf<R>>((resolve, reject) => {
+      // TDLib answers a request R with ResultOf<R> or an error, which dispatch() has already split off
+      const entry: Pending = {
+        clientId,
+        method,
+        resolve: (r) => resolve(r as unknown as td.ResultOf<R>),
+        reject,
+      };
       if (timeout > 0) {
         entry.timer = setTimeout(() => {
           pending.delete(extra);
@@ -172,7 +193,7 @@ export function createTdHub(options: TdHubOptions): TdHub {
       }
       pending.set(extra, entry);
       try {
-        td.send(clientId, { ...request, "@extra": extra });
+        tdjson.send(clientId, { ...request, "@extra": extra });
       } catch (error) {
         settle(extra);
         reject(error);
@@ -192,10 +213,7 @@ export function createTdHub(options: TdHubOptions): TdHub {
     if (clients.size > 0) {
       log.warn("Stopping TDLib with {count} clients still open", { count: clients.size });
     }
-    for (const [clientId, sink] of [...clients]) {
-      unregisterClient(clientId, "TDLib stopped");
-      sink.detached("TDLib stopped");
-    }
+    detachClients("TDLib stopped");
 
     const handle = current;
     if (!handle) {
@@ -210,14 +228,12 @@ export function createTdHub(options: TdHubOptions): TdHub {
       handle.stopped.then(() => true),
       Bun.sleep(graceMs).then(() => false),
     ]);
-    if (stopped) {
-      // Safe now: the thread is out of td_receive. Never terminate it earlier, see spawn()
-      handle.worker.terminate();
-      hubOpen = false;
-    } else {
-      log.error("Receive worker did not stop within {graceMs} ms", { graceMs });
-    }
     current = undefined;
+    // hubOpen stays set: the stuck thread may still call td_receive, so no new hub may start
+    if (!stopped) throw new Error(`Receive worker did not stop within ${graceMs} ms`);
+    // Safe now: the thread is out of td_receive. Never terminate it earlier, see spawn()
+    handle.worker.terminate();
+    hubOpen = false;
   }
 
   function spawn(): void {
@@ -258,9 +274,7 @@ export function createTdHub(options: TdHubOptions): TdHub {
     switch (message.type) {
       case "batch":
         try {
-          for (let i = 0; i < message.items.length; i++) {
-            dispatch(message.items[i] ?? "", message.receivedAt[i] ?? 0);
-          }
+          deliverBatch(message.items);
         } finally {
           if (handle === current) {
             Atomics.sub(ctrl, Ctrl.IN_FLIGHT, 1);
@@ -273,6 +287,8 @@ export function createTdHub(options: TdHubOptions): TdHub {
         return;
       case "stopped":
         handle.markStopped();
+        // Posted after the worker's last batch, so everything it took from TDLib has been delivered
+        if (failed && handle === current) detachClients("TDLib receive loop stopped");
         return;
       case "fatal":
         log.error("Receive worker {generation} failed: {message}", {
@@ -291,15 +307,14 @@ export function createTdHub(options: TdHubOptions): TdHub {
 
     // A crash unwinds the JS stack, so the thread cannot still be inside td_receive
     if (Atomics.load(ctrl, Ctrl.RECEIVING) !== 0) {
-      fail(new Error("Receive worker exited while holding the td_receive mutex"));
+      fail(new Error("Receive worker exited while holding the td_receive mutex"), false);
       return;
     }
 
     const now = Date.now();
-    crashes.push(now);
-    while (crashes.length > 0 && (crashes[0] ?? 0) < now - CRASH_WINDOW_MS) crashes.shift();
+    crashes = [...crashes.filter((at) => at >= now - CRASH_WINDOW_MS), now];
     if (crashes.length > MAX_CRASHES_IN_WINDOW) {
-      fail(new Error(`Receive worker crashed ${crashes.length} times in ${CRASH_WINDOW_MS / 1000} s`));
+      fail(new Error(`Receive worker crashed ${crashes.length} times in ${CRASH_WINDOW_MS / 1000} s`), false);
       return;
     }
 
@@ -316,40 +331,46 @@ export function createTdHub(options: TdHubOptions): TdHub {
     }, delayMs);
   }
 
-  function dispatch(raw: string, receivedAt: number): void {
-    let message: TdObject;
-    try {
-      message = JSON.parse(raw) as TdObject;
-    } catch (error) {
-      log.error("Dropped unparsable TDLib message", { error, preview: raw.slice(0, 200) });
-      return;
+  // A batch has left TDLib for good, so one failing message must not take the rest of it down:
+  // the first failure goes to onFatal, later ones are only logged, and delivery carries on
+  function deliverBatch(items: ReceivedItem[]): void {
+    for (const { raw, receivedAt } of items) {
+      try {
+        dispatch(raw, receivedAt);
+      } catch (error) {
+        const cause = error instanceof Error ? error : new Error(String(error));
+        if (failed) log.error("Failed to deliver a TDLib message after a fatal error", { error: cause });
+        else fail(new Error(`Failed to deliver a TDLib message: ${cause.message}`, { cause }), true);
+      }
     }
+  }
 
-    const extra = message["@extra"];
+  function dispatch(raw: string, receivedAt: number): void {
+    // Routing fields are stripped, so clients and storage see exactly the td_api.tl object
+    const { "@extra": extra, "@client_id": clientId, ...object } = parseTdJson(raw);
+
     if (extra !== undefined) {
-      const entry = settle(String(extra));
+      const entry = settle(extra);
+      // A response that arrives after its request timed out or its client closed
       if (!entry) {
-        log.warn("Response to unknown request {extra} ({type})", { extra, type: message["@type"] });
-      } else if (message["@type"] === "error") {
-        entry.reject(new TdError(Number(message.code), String(message.message), entry.method));
+        log.warn("Response to unknown request {extra} ({type})", { extra, type: object["@type"] });
+      } else if (object["@type"] === "error") {
+        entry.reject(toTdError(object as td.error, entry.method));
       } else {
-        entry.resolve(message);
+        entry.resolve(object);
       }
       return;
     }
 
-    const clientId = Number(message["@client_id"]);
+    if (clientId === undefined) throw new Error(`TDLib sent ${object["@type"]} without @client_id`);
+    // Updates still queued for a client that has already been unregistered
     const sink = clients.get(clientId);
     if (!sink) {
-      log.debug("Message {type} for unknown client {clientId}", { type: message["@type"], clientId });
+      log.debug("Message {type} for unknown client {clientId}", { type: object["@type"], clientId });
       return;
     }
-    try {
-      sink.deliver(message, receivedAt);
-    } catch (error) {
-      // One bad handler must not stop delivery of everything after it
-      log.error("Handler for {type} failed", { type: message["@type"], clientId, error });
-    }
+    // Without @extra, TDLib only ever sends updates
+    sink.deliver(object as td.Update, receivedAt);
   }
 
   function settle(extra: string): Pending | undefined {
@@ -385,15 +406,31 @@ export function createTdHub(options: TdHubOptions): TdHub {
           `TDLib receive loop stalled for ${now - lastHeartbeatAt} ms` +
             (receiving ? " inside td_receive" : ""),
         ),
+        false,
       );
     }
   }
 
-  function fail(error: Error): void {
+  // Stops receiving for good. Nothing answers the clients after that, so they are detached instead of
+  // left to time out in close(). With drain, the worker is healthy: it leaves its loop after the
+  // current td_receive, and clients are detached once it has handed over everything it took from TDLib
+  function fail(error: Error, drain: boolean): void {
     if (failed) return;
     failed = true;
-    log.fatal("TDLib receive loop cannot recover: {message}", { message: error.message });
+    if (drain && current) {
+      Atomics.store(ctrl, Ctrl.OWNER, 0);
+      Atomics.notify(ctrl, Ctrl.IN_FLIGHT);
+    } else {
+      detachClients("TDLib receive loop failed");
+    }
     options.onFatal(error);
+  }
+
+  function detachClients(reason: string): void {
+    for (const [clientId, sink] of [...clients]) {
+      unregisterClient(clientId, reason);
+      sink.detached(reason);
+    }
   }
 
   return {
@@ -406,4 +443,8 @@ export function createTdHub(options: TdHubOptions): TdHub {
     execute,
     stop,
   };
+}
+
+function toTdError(error: td.error, method: string): TdError {
+  return new TdError(error.code, error.message, method);
 }

@@ -1,4 +1,4 @@
-import { Ctrl, type ReceiveLoopConfig, type WorkerMessage } from "./protocol.ts";
+import { Ctrl, type ReceivedItem, type ReceiveLoopConfig, type WorkerMessage } from "./protocol.ts";
 
 export interface ReceiveLoopDeps {
   // td_receive, with the returned string already copied out of TDLib's buffer
@@ -30,8 +30,7 @@ export function runReceiveLoop(
       continue;
     }
 
-    const items: string[] = [];
-    const receivedAt: number[] = [];
+    const items: ReceivedItem[] = [];
     // Block for the first item, then drain whatever is already queued without waiting
     let timeout = config.receiveTimeoutSec;
     while (items.length < config.maxBatch) {
@@ -42,14 +41,13 @@ export function runReceiveLoop(
         break;
       }
       if (result === null) break;
-      items.push(result);
-      receivedAt.push(deps.nowUs());
+      items.push({ raw: result, receivedAt: deps.nowUs() });
       timeout = 0;
     }
 
     if (items.length > 0) {
       Atomics.add(ctrl, Ctrl.IN_FLIGHT, 1);
-      deps.post({ type: "batch", generation, items, receivedAt });
+      deps.post({ type: "batch", generation, items });
     }
   }
 

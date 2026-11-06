@@ -13,7 +13,6 @@ export async function ask(question: string): Promise<string> {
   }
 }
 
-// Reads a line without echoing it
 export function askSecret(question: string): Promise<string> {
   const stdin = process.stdin;
   if (!stdin.isTTY) return ask(question);

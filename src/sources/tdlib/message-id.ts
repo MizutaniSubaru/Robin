@@ -2,11 +2,12 @@
 // Only server ids leave the TDLib boundary. Multiply and divide: JS bitwise operators are 32-bit
 const SERVER_ID_FACTOR = 2 ** 20;
 
-// Server id of a TDLib message id, or undefined for local / not yet sent / scheduled messages
+// undefined for local / not yet sent / scheduled messages, which have no server id yet
 export function toServerMessageId(tdMessageId: number): number | undefined {
-  if (!Number.isSafeInteger(tdMessageId) || tdMessageId <= 0 || tdMessageId % SERVER_ID_FACTOR !== 0) {
-    return undefined;
+  if (!Number.isSafeInteger(tdMessageId) || tdMessageId <= 0) {
+    throw new RangeError(`Invalid TDLib message id: ${tdMessageId}`);
   }
+  if (tdMessageId % SERVER_ID_FACTOR !== 0) return undefined;
   return tdMessageId / SERVER_ID_FACTOR;
 }
 

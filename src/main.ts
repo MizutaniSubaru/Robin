@@ -3,9 +3,9 @@ import { runProcess } from "./process.ts";
 
 await runProcess(
   "main",
-  async ({ config, paths, lc, log }) => {
-    await createApp(config, paths, lc);
-    log.info("Robin started");
+  async (ctx) => {
+    await createApp(ctx);
+    ctx.log.info("Robin started");
   },
   { keepAlive: true },
 );

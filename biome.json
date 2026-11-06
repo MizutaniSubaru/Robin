@@ -33,6 +33,12 @@
         "useConst": "error",
         "useTemplate": "error",
         "useForOf": "error",
+        "noParameterAssign": "error",
+        "noNestedTernary": "error",
+        "useFilenamingConvention": {
+          "level": "error",
+          "options": { "filenameCases": ["kebab-case"], "requireAscii": true }
+        },
         "useConsistentObjectDefinitions": { "level": "error", "options": { "syntax": "shorthand" } }
       },
       "suspicious": {
@@ -51,11 +57,32 @@
         "noFloatingPromises": "error",
         "noMisusedPromises": "error",
         "useAwaitThenable": "error",
-        "useIncludes": "error"
+        "useIncludes": "error",
+        "useExhaustiveSwitchCases": "error"
       }
     }
   },
   "overrides": [
+    {
+      "includes": ["src/db/**", "src/core/**", "src/tdlib-api/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**/sources/**", "**/adapters/**", "**/agent/**", "**/cli/**", "**/app.ts"],
+                    "message": "Dependencies point inward: db, core and tdlib-api never import the layers built on top of them."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     {
       "includes": ["src/core/events/**", "src/core/reducer/**", "src/core/render/**"],
       "linter": {

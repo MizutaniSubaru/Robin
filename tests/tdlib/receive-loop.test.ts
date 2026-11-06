@@ -45,7 +45,15 @@ describe("runReceiveLoop in-process", () => {
     // Only the first call of a batch blocks
     expect(timeouts).toEqual([1, 0, 0, 0]);
     expect(posted).toEqual([
-      { type: "batch", generation: 7, items: ["a", "b", "c"], receivedAt: [1, 1, 1] },
+      {
+        type: "batch",
+        generation: 7,
+        items: [
+          { raw: "a", receivedAt: 1 },
+          { raw: "b", receivedAt: 1 },
+          { raw: "c", receivedAt: 1 },
+        ],
+      },
       { type: "stopped", generation: 7 },
     ]);
     expect(Atomics.load(ctrl, Ctrl.IN_FLIGHT)).toBe(1);
@@ -70,7 +78,7 @@ describe("runReceiveLoop in-process", () => {
           return String(n++);
         },
         post: (message) => {
-          if (message.type === "batch") batches.push(message.items);
+          if (message.type === "batch") batches.push(message.items.map((item) => item.raw));
         },
         nowUs: () => 0,
       },

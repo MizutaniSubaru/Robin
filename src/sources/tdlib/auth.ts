@@ -1,12 +1,12 @@
 import type { Logger } from "../../log/index.ts";
+import type * as td from "../../tdlib-api/td-api.ts";
 import type { TdClient } from "./client.ts";
 import { TdClosedError, TdError } from "./errors.ts";
-import type { TdObject } from "./ffi.ts";
 
 // Answers for an interactive user login. Values are passed straight to TDLib and never logged
 export interface AuthPrompter {
   phoneNumber(): Promise<string>;
-  code(info: { phoneNumber: string; codeType: string }): Promise<string>;
+  code(info: td.authenticationCodeInfo): Promise<string>;
   password(hint: string): Promise<string>;
   emailAddress(): Promise<string>;
   emailCode(): Promise<string>;
@@ -17,7 +17,7 @@ export interface AuthPrompter {
 export type Credentials =
   | { kind: "bot"; token: string }
   // Without a prompter, only an existing session can authorize
-  | { kind: "user"; prompter?: AuthPrompter };
+  | { kind: "user"; prompter: AuthPrompter | undefined };
 
 // The user account has no session and nobody to ask
 export class AuthorizationRequiredError extends Error {
@@ -27,10 +27,9 @@ export class AuthorizationRequiredError extends Error {
 // Errors on these codes come from the answer itself, so asking again makes sense
 const RETRYABLE_ANSWER_CODES = new Set([400]);
 
-// Drives the authorization state machine until authorizationStateReady
 export async function authorize(
   client: TdClient,
-  parameters: TdObject,
+  parameters: td.setTdlibParameters,
   credentials: Credentials,
   log: Logger,
 ): Promise<void> {
@@ -52,11 +51,10 @@ export async function authorize(
       lastLogged = type;
     }
 
-    // Each case either returns, throws, or produces the request that answers the state
-    let request: TdObject;
+    let request: td.Request;
     // Whether a 400 means "ask again" rather than a configuration error
     let fromPrompt = false;
-    switch (type) {
+    switch (state["@type"]) {
       case "authorizationStateReady":
         return;
       case "authorizationStateWaitTdlibParameters":
@@ -74,11 +72,7 @@ export async function authorize(
         fromPrompt = true;
         break;
       case "authorizationStateWaitCode": {
-        const info = state.code_info as TdObject;
-        const code = await requirePrompter(prompter).code({
-          phoneNumber: String(info.phone_number ?? ""),
-          codeType: String((info.type as TdObject | undefined)?.["@type"] ?? "unknown"),
-        });
+        const code = await requirePrompter(prompter).code(state.code_info);
         request = { "@type": "checkAuthenticationCode", code: code.trim() };
         fromPrompt = true;
         break;
@@ -86,7 +80,7 @@ export async function authorize(
       case "authorizationStateWaitPassword":
         request = {
           "@type": "checkAuthenticationPassword",
-          password: await requirePrompter(prompter).password(String(state.password_hint ?? "")),
+          password: await requirePrompter(prompter).password(state.password_hint),
         };
         fromPrompt = true;
         break;
@@ -116,8 +110,11 @@ export async function authorize(
       case "authorizationStateClosing":
       case "authorizationStateClosed":
         throw new TdClosedError(`Client is ${type} during authorization`);
-      default:
-        throw new Error(`Unknown authorization state: ${type}`);
+      default: {
+        // Compile error when the schema gains a state this switch does not handle
+        const unhandled: never = state;
+        throw new Error(`Unhandled authorization state: ${JSON.stringify(unhandled)}`);
+      }
     }
 
     try {

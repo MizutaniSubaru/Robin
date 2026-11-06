@@ -7,6 +7,9 @@ export interface ProcessContext {
   paths: Paths;
   lc: Lifecycle;
   log: Logger;
+  // For failures no caller can await (receive loop dead, storage down, account gone for good):
+  // logs the error, runs lc's cleanups and exits with code 1
+  fatal(error: Error): void;
 }
 
 export interface ProcessOptions {
@@ -44,6 +47,8 @@ export async function runProcess(
     process.exit(code);
   }
 
+  const fatal = (error: Error) => void exit(1, "Fatal error", error);
+
   process.on("SIGINT", () => void exit(0, "SIGINT"));
   process.on("SIGTERM", () => void exit(0, "SIGTERM"));
   process.on("uncaughtException", (error) => void exit(1, "uncaughtException", error));
@@ -52,7 +57,7 @@ export async function runProcess(
   process.on("beforeExit", () => void exit(0, "nothing left to run"));
 
   try {
-    await body({ config, paths, lc, log });
+    await body({ config, paths, lc, log, fatal });
   } catch (error) {
     return exit(1, "startup failed", error);
   }
