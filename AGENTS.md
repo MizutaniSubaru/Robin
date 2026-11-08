@@ -4,6 +4,8 @@ Rules for anyone (human or agent) changing Robin. Keep this file short: it recor
 
 **Maintenance rule:** update this file in the same change whenever an ownership boundary, invariant or lifecycle rule changes.
 
+**Design documents:** the design RFC (`docs/private/robin-design.md`) is a first draft, not a spec, and some of its decisions have been dropped. When it disagrees with this file, the current stack or the code, those win; do not bring back what the RFC proposed in their place. Any decision that departs from the RFC updates the RFC in the same change, so the two never drift apart.
+
 ## System Overview
 
 Robin is a Telegram bot built on an append-only event log. Two TDLib accounts feed it: a user account that sees groups as a member does, and the bot account that sends. Raw TDLib updates are stored first; adapters turn them into Robin events; a pure core reduces and renders those events for the agent.
@@ -25,7 +27,7 @@ src/
 ├── tdlib-api/    Generated TDLib types (td-api.ts from td_api.tl). Neutral: anyone may import
 ├── sources/      Inputs from the outside world
 │   └── tdlib/    FFI, receive worker, hub, clients, accounts, auth, raw update filter and storage
-├── core/         Robin's own events, reducer and renderer. Pure (see below)
+├── core/         Robin's own events, reducer and renderer. Pure (see below). Not created yet; its rules already apply
 ├── db/           Drizzle schema, connection, migrations
 ├── config/       TOML config + environment, validated with Zod
 ├── log/          LogTape setup
@@ -55,7 +57,8 @@ Failures no caller can await (receive loop dead, storage down for good, account 
 ### TDLib Boundary
 
 - `td_receive` runs only in the receive worker; the main thread calls `td_send` / `td_execute`. The worker never calls `td_receive` on two threads at once (the `RECEIVING` slot is a mutex).
-- `ffi.ts` `parseTdJson` is the only place TDLib JSON gets a static type. Everywhere else uses `tdlib-api` types; no `as` casts on TDLib data.
+- `ffi.ts` `parseTdJson` checks the envelope and the hub's `dispatch` narrows it once; those are the only places TDLib JSON gets a static type. Everywhere else uses `tdlib-api` types; no `as` casts on TDLib data.
+- TDLib aborts the process at exit while one of its instances is still open. Accounts close their clients before the hub stops, and `hub.stop()` closes any instance left over; only a dead receive loop may leave one open. A client failing to handle an update is fatal, but receiving goes on so the shutdown can still close the accounts.
 - The generated types must match the pinned `prebuilt-tdlib` commit. After an upgrade run `bun run tdlib:types`; a test fails until then. Generated files are gitignored.
 - Only server message ids leave the TDLib boundary (`message-id.ts`: TDLib id = server id × 2^20).
 

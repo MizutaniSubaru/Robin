@@ -63,7 +63,14 @@ export function createTdAccount(hub: TdHub, options: AccountOptions, log: Logger
       await authorize(next, options.parameters, credentials, log);
       me = await verifyIdentity(next);
     } catch (error) {
-      await next.close();
+      // The start failure is what callers act on (scheduleRestart checks for AuthorizationRequiredError),
+      // so a failing close must not replace it
+      await next.close().catch((closeError: unknown) => {
+        log.error("{account} client did not close after a failed start", {
+          account: name,
+          error: closeError,
+        });
+      });
       throw error;
     }
     identity = me;

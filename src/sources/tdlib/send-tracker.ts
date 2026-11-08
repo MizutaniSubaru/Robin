@@ -9,20 +9,23 @@ interface Waiter {
 }
 
 export interface SendTracker {
-  // Resolves with the final message once TDLib confirms the send of the temporary message tempId.
+  // Resolves with the final message once TDLib confirms the send of the temporary message tempId in chatId.
   // Safe to call after the confirmation already arrived: the hub delivers a whole worker batch
   // synchronously, so updateMessageSendSucceeded can land before the caller's await resumes
-  wait(tempId: number, timeoutMs: number): Promise<td.message>;
+  wait(chatId: number, tempId: number, timeoutMs: number): Promise<td.message>;
   dispose(): void;
 }
 
 // Unclaimed outcomes kept for late callers; the oldest are dropped beyond this
 const MAX_UNCLAIMED = 1_000;
 
+// TDLib message ids, temporary ones included, are unique only within a chat
+const sendKey = (chatId: number, tempId: number) => `${chatId}:${tempId}`;
+
 // Matches updateMessageSendSucceeded / updateMessageSendFailed to the temporary id sendMessage returned
 export function createSendTracker(onUpdate: (listener: UpdateListener) => () => void): SendTracker {
-  const waiters = new Map<number, Waiter>();
-  const unclaimed = new Map<number, Outcome>();
+  const waiters = new Map<string, Waiter>();
+  const unclaimed = new Map<string, Outcome>();
 
   const unsubscribe = onUpdate((update) => {
     let outcome: Outcome;
@@ -33,15 +36,15 @@ export function createSendTracker(onUpdate: (listener: UpdateListener) => () => 
     } else {
       return;
     }
-    const tempId = update.old_message_id;
+    const key = sendKey(update.message.chat_id, update.old_message_id);
 
-    const waiter = waiters.get(tempId);
+    const waiter = waiters.get(key);
     if (waiter) {
-      waiters.delete(tempId);
+      waiters.delete(key);
       waiter.settle(outcome);
       return;
     }
-    unclaimed.set(tempId, outcome);
+    unclaimed.set(key, outcome);
     if (unclaimed.size > MAX_UNCLAIMED) {
       const oldest = unclaimed.keys().next().value;
       if (oldest !== undefined) unclaimed.delete(oldest);
@@ -49,19 +52,24 @@ export function createSendTracker(onUpdate: (listener: UpdateListener) => () => 
   });
 
   return {
-    wait(tempId, timeoutMs) {
-      const early = unclaimed.get(tempId);
+    wait(chatId, tempId, timeoutMs) {
+      const key = sendKey(chatId, tempId);
+      const early = unclaimed.get(key);
       if (early) {
-        unclaimed.delete(tempId);
+        unclaimed.delete(key);
         return early.ok ? Promise.resolve(early.message) : Promise.reject(early.error);
       }
-      if (waiters.has(tempId)) return Promise.reject(new Error(`Already waiting for message ${tempId}`));
+      if (waiters.has(key)) {
+        return Promise.reject(new Error(`Already waiting for message ${tempId} in chat ${chatId}`));
+      }
       return new Promise<td.message>((resolve, reject) => {
         const timer = setTimeout(() => {
-          waiters.delete(tempId);
-          reject(new Error(`No send confirmation for message ${tempId} in ${timeoutMs} ms`));
+          waiters.delete(key);
+          reject(
+            new Error(`No send confirmation for message ${tempId} in chat ${chatId} in ${timeoutMs} ms`),
+          );
         }, timeoutMs);
-        waiters.set(tempId, {
+        waiters.set(key, {
           settle(outcome) {
             clearTimeout(timer);
             if (outcome.ok) resolve(outcome.message);
@@ -73,8 +81,8 @@ export function createSendTracker(onUpdate: (listener: UpdateListener) => () => 
     dispose() {
       unsubscribe();
       unclaimed.clear();
-      for (const [tempId, waiter] of waiters) {
-        waiter.settle({ ok: false, error: new Error(`Stopped waiting for message ${tempId}`) });
+      for (const [key, waiter] of waiters) {
+        waiter.settle({ ok: false, error: new Error(`Stopped waiting for message ${key}`) });
       }
       waiters.clear();
     },

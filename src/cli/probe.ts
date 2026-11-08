@@ -229,7 +229,7 @@ async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<voi
         },
       });
       const localHasReply = pending.reply_to !== undefined;
-      const final = await sends.wait(pending.id, 20_000);
+      const final = await sends.wait(chatId, pending.id, 20_000);
       const finalId = final.id;
       probeMessages.push(finalId);
       // What everyone else sees, from the user account's point of view
@@ -265,7 +265,7 @@ async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<voi
   await reply("cold");
   await react("cold");
 
-  // Warm up the way Cahciua does, then repeat
+  // Warm up
   await attempt(steps, "preheat getChat", async () => {
     const c = await bot.invoke({ "@type": "getChat", chat_id: chatId });
     return c.title;

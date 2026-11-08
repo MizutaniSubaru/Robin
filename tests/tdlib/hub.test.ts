@@ -145,7 +145,18 @@ describe("createTdHub", () => {
     expect(client.isOpen).toBe(false);
   });
 
-  test("a failing listener reports fatal once while the rest of the received updates are delivered", async () => {
+  // Regression: an instance still open at exit made TDLib abort the process (SIGABRT, exit 134)
+  test("stop closes TDLib instances whose clients were never closed", async () => {
+    const h = openHub();
+    const client = openClient(h);
+    await client.invoke({ "@type": "testCallEmpty" });
+    expect(h.stats.instances).toBe(1);
+
+    await h.stop();
+    expect(h.stats.instances).toBe(0);
+  });
+
+  test("a failing listener reports fatal once and the client still closes normally", async () => {
     const h = openHub();
     const client = openClient(h);
     const seen: string[] = [];
@@ -156,16 +167,19 @@ describe("createTdHub", () => {
     });
     client.onUpdate((update) => other.push(update["@type"]));
 
-    // Clients are detached once the worker has handed over everything it took from TDLib
-    await client.closed;
+    // The first authorization state is part of TDLib's startup burst, which arrives as one batch
+    await client.waitForAuthorizationChange(0);
     expect(fatalErrors).toHaveLength(1);
     expect(fatalErrors[0]?.message).toMatch(/listener broke/);
-    // TDLib's startup burst arrives as one batch: the updates after the failing one still came through,
-    // and the other listener saw the failing update too
+    // The updates after the failing one still came through, and the other listener saw the failing one too
     expect(seen.length).toBeGreaterThan(1);
     expect(other).toEqual(seen);
-    expect(h.stats.clients).toBe(0);
     fatalErrors.length = 0;
+
+    // Receiving goes on, so the shutdown that fatal starts can close the account in order
+    await client.close();
+    expect(client.authorizationState?.["@type"]).toBe("authorizationStateClosed");
+    expect(h.stats.instances).toBe(0);
   });
 
   test("restarts a crashed receive worker without losing the client", async () => {

@@ -24,8 +24,8 @@ export interface TdHubOptions {
   logVerbosity: number;
   logFile: string;
   log: Logger;
-  // Called once when receiving cannot go on (stalled inside TDLib, crash loop, a client failed to
-  // handle an update). The caller should exit and let the process supervisor restart Robin
+  // Called when receiving cannot go on (stalled inside TDLib, crash loop), or once when a client
+  // failed to handle an update. The caller should exit and let the process supervisor restart Robin
   onFatal(error: Error): void;
   loop?: Partial<ReceiveLoopConfig>;
   // Default per-request timeout; 0 disables it
@@ -45,6 +45,8 @@ export interface TdHubStats {
   restarts: number;
   pending: number;
   clients: number;
+  // TDLib instances not yet reported closed, with or without a client attached
+  instances: number;
 }
 
 export interface TdHub {
@@ -56,7 +58,8 @@ export interface TdHub {
   send<R extends td.Request>(clientId: number, request: R, options?: SendOptions): Promise<td.ResultOf<R>>;
   // Synchronous TDLib call; throws TdError when TDLib answers with an error
   execute<R extends td.Request>(request: R): td.ResultOf<R>;
-  // Clients should be closed first: once receiving stops, their final updates are lost
+  // Clients should be closed first: their sinks are detached here, so their final updates are lost.
+  // Instances still open are closed before receiving stops (see closeOpenInstances)
   stop(): Promise<void>;
 }
 
@@ -84,6 +87,7 @@ const RESTART_BASE_MS = 200;
 const RESTART_MAX_MS = 30_000;
 const CRASH_WINDOW_MS = 5 * 60_000;
 const MAX_CRASHES_IN_WINDOW = 5;
+const INSTANCE_CLOSE_TIMEOUT_MS = 15_000;
 const WORKER_URL = new URL("./receive-worker.ts", import.meta.url);
 
 // td_receive is process-wide, so the control block (and its RECEIVING mutex) is too,
@@ -99,6 +103,11 @@ let hubOpen = false;
 // resolves requests by @extra and hands updates to clients by @client_id.
 // Recovery: a crashed worker is replaced once its thread is gone (TDLib keeps queuing meanwhile);
 // a worker stuck inside td_receive cannot be replaced safely, so that is reported through onFatal.
+// A client failing to handle an update is reported too, but receiving goes on, so the lifecycle can
+// still close every account in order.
+// Exit: TDLib aborts the process (SIGABRT from one of its threads while exit() runs static destructors)
+// when an instance is still open, so stop() closes leftovers while it can still receive their
+// authorizationStateClosed. Only a dead receive loop leaves them open.
 // At most one hub per process
 export function createTdHub(options: TdHubOptions): TdHub {
   if (hubOpen) throw new Error("A TdHub is already open: td_receive must have a single owner per process");
@@ -107,6 +116,9 @@ export function createTdHub(options: TdHubOptions): TdHub {
   const { log } = options;
   const loop: ReceiveLoopConfig = { ...DEFAULT_LOOP, ...options.loop };
   const clients = new Map<number, ClientSink>();
+  // Outlives the sink: a detached client's TDLib instance is open until TDLib says otherwise
+  const instances = new Set<number>();
+  let onInstancesClosed: (() => void) | undefined;
   const pending = new Map<string, Pending>();
   let crashes: number[] = [];
   let current: WorkerHandle | undefined;
@@ -118,7 +130,9 @@ export function createTdHub(options: TdHubOptions): TdHub {
   let restartTimer: Timer | undefined;
   let stopping: Promise<void> | undefined;
   let stopRequested = false;
+  // Receiving is gone for good
   let failed = false;
+  let deliveryFailed = false;
 
   let tdjson: ReturnType<typeof openTdJson>;
   try {
@@ -154,6 +168,7 @@ export function createTdHub(options: TdHubOptions): TdHub {
     if (stopRequested) throw new TdClosedError("TDLib is stopping");
     const clientId = tdjson.createClientId();
     clients.set(clientId, sink);
+    instances.add(clientId);
     return clientId;
   }
 
@@ -174,9 +189,21 @@ export function createTdHub(options: TdHubOptions): TdHub {
     if (!clients.has(clientId)) {
       return Promise.reject(new TdClosedError(`Cannot send ${method}: client ${clientId} is closed`));
     }
+    return sendUnchecked(
+      clientId,
+      request,
+      timeoutMs ?? options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+    );
+  }
 
+  // send() without the open checks, so stop() can still reach detached instances
+  function sendUnchecked<R extends td.Request>(
+    clientId: number,
+    request: R,
+    timeout: number,
+  ): Promise<td.ResultOf<R>> {
+    const method = request["@type"];
     const extra = String(++nextExtra);
-    const timeout = timeoutMs ?? options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     return new Promise<td.ResultOf<R>>((resolve, reject) => {
       // TDLib answers a request R with ResultOf<R> or an error, which dispatch() has already split off
       const entry: Pending = {
@@ -220,6 +247,7 @@ export function createTdHub(options: TdHubOptions): TdHub {
       hubOpen = false;
       return;
     }
+    if (!failed) await closeOpenInstances();
     // Revoking ownership makes the loop exit after its current td_receive returns
     Atomics.store(ctrl, Ctrl.OWNER, 0);
     Atomics.notify(ctrl, Ctrl.IN_FLIGHT);
@@ -234,6 +262,29 @@ export function createTdHub(options: TdHubOptions): TdHub {
     // Safe now: the thread is out of td_receive. Never terminate it earlier, see spawn()
     handle.worker.terminate();
     hubOpen = false;
+  }
+
+  // Normally empty: accounts close their clients before the hub stops. Whatever is left (a close that
+  // timed out, a client never closed) is closed here, while the worker still receives the answer
+  async function closeOpenInstances(): Promise<void> {
+    if (instances.size === 0) return;
+    log.warn("Closing {count} TDLib instances left open", { count: instances.size });
+    const { promise: allClosed, resolve } = Promise.withResolvers<void>();
+    onInstancesClosed = resolve;
+    for (const clientId of instances) {
+      // The instance reports authorizationStateClosed either way; an error here only means it was closing
+      sendUnchecked(clientId, { "@type": "close" }, 0).catch((error: unknown) =>
+        log.debug("close for TDLib instance {clientId} failed", { clientId, error }),
+      );
+    }
+    const closed = await Promise.race([
+      allClosed.then(() => true),
+      Bun.sleep(INSTANCE_CLOSE_TIMEOUT_MS).then(() => false),
+    ]);
+    onInstancesClosed = undefined;
+    if (!closed) {
+      log.error("{count} TDLib instances did not close; TDLib may abort on exit", { count: instances.size });
+    }
   }
 
   function spawn(): void {
@@ -287,8 +338,6 @@ export function createTdHub(options: TdHubOptions): TdHub {
         return;
       case "stopped":
         handle.markStopped();
-        // Posted after the worker's last batch, so everything it took from TDLib has been delivered
-        if (failed && handle === current) detachClients("TDLib receive loop stopped");
         return;
       case "fatal":
         log.error("Receive worker {generation} failed: {message}", {
@@ -307,14 +356,14 @@ export function createTdHub(options: TdHubOptions): TdHub {
 
     // A crash unwinds the JS stack, so the thread cannot still be inside td_receive
     if (Atomics.load(ctrl, Ctrl.RECEIVING) !== 0) {
-      fail(new Error("Receive worker exited while holding the td_receive mutex"), false);
+      fail(new Error("Receive worker exited while holding the td_receive mutex"));
       return;
     }
 
     const now = Date.now();
     crashes = [...crashes.filter((at) => at >= now - CRASH_WINDOW_MS), now];
     if (crashes.length > MAX_CRASHES_IN_WINDOW) {
-      fail(new Error(`Receive worker crashed ${crashes.length} times in ${CRASH_WINDOW_MS / 1000} s`), false);
+      fail(new Error(`Receive worker crashed ${crashes.length} times in ${CRASH_WINDOW_MS / 1000} s`));
       return;
     }
 
@@ -332,15 +381,21 @@ export function createTdHub(options: TdHubOptions): TdHub {
   }
 
   // A batch has left TDLib for good, so one failing message must not take the rest of it down:
-  // the first failure goes to onFatal, later ones are only logged, and delivery carries on
+  // the first failure goes to onFatal, later ones are only logged, and delivery carries on.
+  // Receiving carries on too: the shutdown that onFatal starts closes the accounts through this hub,
+  // and TDLib must still be heard closing them (see closeOpenInstances)
   function deliverBatch(items: ReceivedItem[]): void {
     for (const { raw, receivedAt } of items) {
       try {
         dispatch(raw, receivedAt);
       } catch (error) {
         const cause = error instanceof Error ? error : new Error(String(error));
-        if (failed) log.error("Failed to deliver a TDLib message after a fatal error", { error: cause });
-        else fail(new Error(`Failed to deliver a TDLib message: ${cause.message}`, { cause }), true);
+        if (deliveryFailed) {
+          log.error("Failed to deliver a TDLib message after a fatal error", { error: cause });
+          continue;
+        }
+        deliveryFailed = true;
+        options.onFatal(new Error(`Failed to deliver a TDLib message: ${cause.message}`, { cause }));
       }
     }
   }
@@ -363,14 +418,22 @@ export function createTdHub(options: TdHubOptions): TdHub {
     }
 
     if (clientId === undefined) throw new Error(`TDLib sent ${object["@type"]} without @client_id`);
+    // Without @extra, TDLib only ever sends updates
+    const update = object as td.Update;
+    if (
+      update["@type"] === "updateAuthorizationState" &&
+      update.authorization_state["@type"] === "authorizationStateClosed"
+    ) {
+      instances.delete(clientId);
+      if (instances.size === 0) onInstancesClosed?.();
+    }
     // Updates still queued for a client that has already been unregistered
     const sink = clients.get(clientId);
     if (!sink) {
-      log.debug("Message {type} for unknown client {clientId}", { type: object["@type"], clientId });
+      log.debug("Message {type} for unknown client {clientId}", { type: update["@type"], clientId });
       return;
     }
-    // Without @extra, TDLib only ever sends updates
-    sink.deliver(object as td.Update, receivedAt);
+    sink.deliver(update, receivedAt);
   }
 
   function settle(extra: string): Pending | undefined {
@@ -406,23 +469,16 @@ export function createTdHub(options: TdHubOptions): TdHub {
           `TDLib receive loop stalled for ${now - lastHeartbeatAt} ms` +
             (receiving ? " inside td_receive" : ""),
         ),
-        false,
       );
     }
   }
 
-  // Stops receiving for good. Nothing answers the clients after that, so they are detached instead of
-  // left to time out in close(). With drain, the worker is healthy: it leaves its loop after the
-  // current td_receive, and clients are detached once it has handed over everything it took from TDLib
-  function fail(error: Error, drain: boolean): void {
+  // Receiving is gone for good. Nothing answers the clients after that, so they are detached instead of
+  // left to time out in close(); their TDLib instances cannot be closed any more
+  function fail(error: Error): void {
     if (failed) return;
     failed = true;
-    if (drain && current) {
-      Atomics.store(ctrl, Ctrl.OWNER, 0);
-      Atomics.notify(ctrl, Ctrl.IN_FLIGHT);
-    } else {
-      detachClients("TDLib receive loop failed");
-    }
+    detachClients("TDLib receive loop failed");
     options.onFatal(error);
   }
 
@@ -435,7 +491,13 @@ export function createTdHub(options: TdHubOptions): TdHub {
 
   return {
     get stats() {
-      return { generation, restarts, pending: pending.size, clients: clients.size };
+      return {
+        generation,
+        restarts,
+        pending: pending.size,
+        clients: clients.size,
+        instances: instances.size,
+      };
     },
     registerClient,
     unregisterClient,
