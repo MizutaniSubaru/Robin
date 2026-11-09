@@ -33,9 +33,15 @@ interface ChatEntry {
 
 interface AccountDirectory {
   chats: Map<number, ChatEntry>;
-  // updateMessageContent comes just before the updateMessageEdited that dates it
+  // New content waiting for the updateMessageEdited that dates it. Not every content update gets one
+  // with a date: a link preview or a reply markup change ends with edit_date 0, or with no
+  // updateMessageEdited at all, so the oldest entries are dropped beyond PENDING_CONTENT_LIMIT
   editedContent: Map<string, td.MessageContent>;
 }
+
+// A real edit's updateMessageEdited follows its content almost at once; this only bounds the
+// entries that never get one
+const PENDING_CONTENT_LIMIT = 1000;
 
 export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAdapter {
   // User ids and names are the same for both accounts
@@ -143,8 +149,9 @@ export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAd
     accounts[account].editedContent.delete(key);
     const chat = served(account, update.chat_id);
     const messageId = toServerMessageId(update.message_id);
-    // Without new content only the reply markup changed
-    if (chat === undefined || messageId === undefined || !newContent) return [];
+    // Without new content only the reply markup changed. Without an edit date nobody edited the
+    // message: TDLib refreshed it (a link preview came in, a button changed)
+    if (chat === undefined || messageId === undefined || !newContent || update.edit_date === 0) return [];
     const names: Record<string, string> = {};
     const body = content(newContent, names);
     if (!body) return [];
@@ -201,9 +208,18 @@ export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAd
         }
         case "updateNewMessage":
           return newMessage(account, update.message, receivedAt);
-        case "updateMessageContent":
-          accounts[account].editedContent.set(`${update.chat_id}:${update.message_id}`, update.new_content);
+        case "updateMessageContent": {
+          const pending = accounts[account].editedContent;
+          const key = `${update.chat_id}:${update.message_id}`;
+          // Re-inserted, so the map stays in arrival order and the oldest entry goes first
+          pending.delete(key);
+          pending.set(key, update.new_content);
+          if (pending.size > PENDING_CONTENT_LIMIT) {
+            const oldest = pending.keys().next();
+            if (!oldest.done) pending.delete(oldest.value);
+          }
           return [];
+        }
         case "updateMessageEdited":
           return edited(account, update, receivedAt);
         case "updateDeleteMessages":

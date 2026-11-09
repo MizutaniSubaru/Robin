@@ -213,6 +213,53 @@ describe("createTelegramAdapter", () => {
     expect(a.adapt("user", editedAt, T + 2)).toEqual([]);
   });
 
+  // Regression: a link preview arriving made TDLib send new content with edit_date 0, which became
+  // an edit without a date and stopped the process when the store refused it
+  test("a content refresh without an edit date is not an edit", () => {
+    const a = adapter();
+    a.adapt("user", newChat(GROUP, supergroup), T);
+    const refreshed = update({
+      "@type": "updateMessageContent",
+      chat_id: GROUP,
+      message_id: 538968064,
+      new_content: { "@type": "messageText", text: formatted("see https://example.com") },
+    });
+    const undated = update({
+      "@type": "updateMessageEdited",
+      chat_id: GROUP,
+      message_id: 538968064,
+      edit_date: 0,
+    });
+    expect(a.adapt("user", refreshed, T)).toEqual([]);
+    expect(a.adapt("user", undated, T + 1)).toEqual([]);
+    // The refreshed content was used up; a later markup-only edit finds nothing pending
+    expect(a.adapt("user", { ...undated, edit_date: 1793954153 }, T + 2)).toEqual([]);
+  });
+
+  test("content that never gets its updateMessageEdited is eventually dropped", () => {
+    const a = adapter();
+    a.adapt("user", newChat(GROUP, supergroup), T);
+    const content = (n: number) =>
+      update({
+        "@type": "updateMessageContent",
+        chat_id: GROUP,
+        message_id: n * 1048576,
+        new_content: { "@type": "messageText", text: formatted(`v${n}`) },
+      });
+    const edited = (n: number) =>
+      update({
+        "@type": "updateMessageEdited",
+        chat_id: GROUP,
+        message_id: n * 1048576,
+        edit_date: 1793954153,
+      });
+    for (let n = 1; n <= 1001; n++) a.adapt("user", content(n), T);
+    expect(a.adapt("user", edited(1), T + 1)).toEqual([]);
+    expect(a.adapt("user", edited(1001), T + 1)).toMatchObject([
+      { body: { kind: "message.edited", messageId: "1001", content: [{ text: "v1001" }] } },
+    ]);
+  });
+
   test("only permanent deletions", () => {
     const a = adapter();
     a.adapt("user", newChat(GROUP, supergroup), T);
