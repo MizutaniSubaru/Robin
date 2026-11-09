@@ -64,6 +64,12 @@ export function renderNow(nowMs: number, options: RenderOptions): string {
   return `<now${attrs({ date: at.date, weekday: at.weekday, time: at.time, tz: options.timezone })}/>`;
 }
 
+// The chat itself. Its title is chosen by its members, so it is shown like any other user text:
+// as escaped data in the timeline, never in the instructions
+export function renderChat(chat: { kind: "private" | "group"; title: string | null }): string {
+  return `<chat${attrs({ type: chat.kind, title: chat.title ?? undefined })}/>`;
+}
+
 export function messageAlias(messageId: string): string {
   return `m${messageId}`;
 }

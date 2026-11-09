@@ -156,7 +156,7 @@ describe("runChat", () => {
     // Plain text from the model is never sent; Markdown becomes entities
     expect(sent).toEqual([{ chat: GROUP, text: "Hello Alice", replyTo: "41" }]);
     const first = requests[0];
-    expect(first?.system).toContain('the Telegram group "Lab"');
+    expect(first?.system).toContain("You are in a Telegram group");
     expect(first?.tools.map((t) => t.name)).toEqual(["send_message", "end_turn"]);
     expect(first?.messages[0]).toEqual({
       role: "user",
@@ -216,7 +216,10 @@ describe("runChat", () => {
       [false, 3],
       [false, 0],
     ]);
-    expect(parts[0]?.type === "text" && parts[0].text).toStartWith("<timeline>\n");
+    expect(parts[0]?.type === "text" && parts[0].text).toStartWith(
+      '<chat type="group" title="Lab"/>\n<timeline>\n',
+    );
+    expect(requests[0]?.system).not.toContain("Lab");
   });
 
   test("bad tool calls go back to the model as errors; limits hold", async () => {

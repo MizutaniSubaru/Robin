@@ -1,5 +1,5 @@
 import type { ChatState } from "../core/reducer/index.ts";
-import { messageAlias, renderNow, renderTimelineBlocks } from "../core/render/index.ts";
+import { messageAlias, renderChat, renderNow, renderTimelineBlocks } from "../core/render/index.ts";
 import type { EventStore, Projection } from "../core/store/index.ts";
 import {
   LlmError,
@@ -64,16 +64,16 @@ export async function runChat(
   const system = systemPrompt({
     persona: options.persona,
     chatType: info.type,
-    title: info.title,
     timezone: options.timezone,
     maxSends: options.maxSends,
   });
   const tools = toolSpecs();
+  const chatLine = renderChat({ kind: info.type === "private" ? "private" : "group", title: info.title });
   const messages: LlmMessage[] = [
     {
       role: "user",
       parts: [
-        ...timelineParts(state, options),
+        ...timelineParts(chatLine, state, options),
         {
           type: "text",
           text: `</timeline>\n${renderNow(Date.now(), options)}\n${triggerLine(trigger.reason, messageAlias(trigger.messageId))}`,
@@ -160,13 +160,13 @@ export async function runChat(
 // One part per window block. The cache breakpoint goes after the last complete block: that prefix
 // is the same text in every run until the next block fills up, so runs read it instead of writing
 // it again. The block still filling up changes with every message and is left out of it
-function timelineParts(state: ChatState, options: RunOptions): TextPart[] {
+function timelineParts(chatLine: string, state: ChatState, options: RunOptions): TextPart[] {
   const blocks = renderTimelineBlocks(state, options);
   const lastComplete = blocks.findLastIndex((block) => block.complete);
   const parts: TextPart[] = blocks.map((block, i) => ({
     type: "text",
-    text: `${i === 0 ? "<timeline>\n" : ""}${block.text}\n`,
+    text: `${i === 0 ? `${chatLine}\n<timeline>\n` : ""}${block.text}\n`,
     ...(i === lastComplete ? { cache: true } : {}),
   }));
-  return parts.length > 0 ? parts : [{ type: "text", text: "<timeline>\n" }];
+  return parts.length > 0 ? parts : [{ type: "text", text: `${chatLine}\n<timeline>\n` }];
 }

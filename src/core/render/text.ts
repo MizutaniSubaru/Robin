@@ -17,8 +17,10 @@ function markers(entity: TextEntity, aliasOf: AliasOf): [open: string, close: st
       return undefined;
     case "code":
       return ["`", "`"];
+    // The language is whatever the sender typed: only a language name's characters are kept, so it
+    // can neither leave the fence nor carry markup
     case "pre":
-      return [`\`\`\`${entity.language}\n`, "\n```"];
+      return [`\`\`\`${entity.language.replace(/[^\w+#.-]/g, "")}\n`, "\n```"];
     case "text_url":
       return [`<link${attrs({ url: entity.url })}>`, "</link>"];
     case "mention_user":
