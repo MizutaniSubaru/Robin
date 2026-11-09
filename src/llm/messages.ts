@@ -46,15 +46,20 @@ export function createMessagesProvider(options: MessagesOptions): LlmProvider {
     timeout: options.timeoutMs,
     ...(options.fetch ? { fetch: options.fetch } : {}),
   });
-  const cacheControl = { type: "ephemeral" as const, ttl: options.cacheTtl };
+  const cacheControl: CacheControl = { type: "ephemeral", ttl: options.cacheTtl };
 
+  // Breakpoints: the system prompt, the parts the request marks (the stable timeline prefix), and
+  // the end of the conversation. A cache write only pays off if a later request reads it, so each
+  // sits where the next request starts with the same text: the system prompt and the timeline
+  // prefix are read by the next run, the conversation's end by the run's next step
   function toWire(request: LlmRequest): BetaMessageCreateParamsNonStreaming {
     return {
       model: options.model,
       max_tokens: options.maxOutputTokens,
-      // The system prompt is stable for a chat: cache it on its own
       system: [{ type: "text", text: request.system, cache_control: cacheControl }],
-      messages: request.messages.map((m) => toWireMessage(m, cacheControl)),
+      messages: request.messages.map((m, i) =>
+        toWireMessage(m, cacheControl, i === request.messages.length - 1),
+      ),
       tools: request.tools.map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -101,23 +106,28 @@ export function createMessagesProvider(options: MessagesOptions): LlmProvider {
   };
 }
 
-function toWireMessage(
-  message: LlmMessage,
-  cacheControl: { type: "ephemeral"; ttl: "5m" | "1h" },
-): BetaMessageParam {
+type CacheControl = { type: "ephemeral"; ttl: "5m" | "1h" };
+
+// last: the request's final message, whose last block gets the conversation breakpoint. It is a
+// user turn (the run's first message or tool results): the run only ever appends to it
+function toWireMessage(message: LlmMessage, cacheControl: CacheControl, last: boolean): BetaMessageParam {
+  const cachedAt = (i: number, length: number) => last && i === length - 1;
   switch (message.role) {
     case "user":
       return {
         role: "user",
-        content: message.parts.map((part): BetaContentBlockParam => {
+        content: message.parts.map((part, i): BetaContentBlockParam => {
+          const cache = part.type === "text" && part.cache === true;
+          const control = cache || cachedAt(i, message.parts.length) ? { cache_control: cacheControl } : {};
           if (part.type === "image") {
             return {
               type: "image",
               source: { type: "base64", media_type: imageMime(part.mime), data: part.data },
+              ...control,
             };
           }
           const block: BetaTextBlockParam = { type: "text", text: part.text };
-          return part.cache ? { ...block, cache_control: cacheControl } : block;
+          return { ...block, ...control };
         }),
       };
     case "assistant":
@@ -128,11 +138,12 @@ function toWireMessage(
     case "tool":
       return {
         role: "user",
-        content: message.results.map((result) => ({
+        content: message.results.map((result, i) => ({
           type: "tool_result",
           tool_use_id: result.callId,
           content: result.content,
           is_error: result.isError,
+          ...(cachedAt(i, message.results.length) ? { cache_control: cacheControl } : {}),
         })),
       };
   }

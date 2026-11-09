@@ -158,11 +158,11 @@ describe("runChat", () => {
     const first = requests[0];
     expect(first?.system).toContain('the Telegram group "Lab"');
     expect(first?.tools.map((t) => t.name)).toEqual(["send_message", "end_turn"]);
-    expect(first?.messages[0]).toMatchObject({
+    expect(first?.messages[0]).toEqual({
       role: "user",
       parts: [
-        { cache: true, text: expect.stringContaining('<message id="m41" from="u1" name="Alice"') },
-        { text: expect.stringContaining('<trigger reason="mention" message="m41"/>') },
+        { type: "text", text: expect.stringContaining('<message id="m41" from="u1" name="Alice"') },
+        { type: "text", text: expect.stringContaining('<trigger reason="mention" message="m41"/>') },
       ],
     });
     expect(requests[1]?.messages.at(-1)).toEqual({
@@ -197,6 +197,26 @@ describe("runChat", () => {
     ]);
     // The snapshot was written at the end
     expect(db.orm.select().from(schema.chatSnapshots).all()).toHaveLength(1);
+  });
+
+  // Regression: the breakpoint sat at the end of the whole timeline, which moves with every message,
+  // so every run wrote the cache and none read it
+  test("caches the timeline up to its last complete block", async () => {
+    for (let i = 1; i <= 23; i++) store.commitInbound(inbound(GROUP, String(i), {}, T0 + i));
+    const { provider, requests } = scriptedProvider([[call("end_turn", {})]]);
+    await runChat(deps(provider, fakeOutbound().outbound), GROUP, trigger, new AbortController().signal);
+    const parts = requests[0]?.messages[0]?.role === "user" ? requests[0].messages[0].parts : [];
+    const shown = parts.map((p) =>
+      p.type === "text" ? [p.cache === true, p.text.match(/id="m\d+"/g)?.length ?? 0] : [],
+    );
+    // Blocks of 10 items: two complete, three items still filling up, then now and the trigger
+    expect(shown).toEqual([
+      [false, 10],
+      [true, 10],
+      [false, 3],
+      [false, 0],
+    ]);
+    expect(parts[0]?.type === "text" && parts[0].text).toStartWith("<timeline>\n");
   });
 
   test("bad tool calls go back to the model as errors; limits hold", async () => {

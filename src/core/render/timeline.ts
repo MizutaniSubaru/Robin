@@ -13,25 +13,49 @@ export interface RenderOptions {
 // way again (until an edit, deletion, send result or window trim touches it), which keeps the
 // model's prompt cache valid across runs
 export function renderTimeline(state: ChatState, options: RenderOptions): string {
+  return renderTimelineBlocks(state, options)
+    .map((block) => block.text)
+    .join("\n");
+}
+
+export interface TimelineBlock {
+  text: string;
+  // Holds a whole window block: it changes only when an item in it is edited, deleted or settled
+  complete: boolean;
+}
+
+// The timeline cut where the window trims, every blockSize items counted from the start of the chat
+// (the window only ever drops whole blocks, so the cuts never move). A complete block is the same
+// text from run to run, which is what a prompt cache breakpoint needs; only the last block grows
+export function renderTimelineBlocks(state: ChatState, options: RenderOptions): TimelineBlock[] {
   const clock = createClock(options.timezone);
   const aliasOf: AliasOf = (user) => {
     const entry = state.users[user];
     if (!entry) throw new Error(`User ${user} has no alias in ${state.chat}`);
     return entry.alias;
   };
+  const { blockSize } = state.window;
 
-  const lines: string[] = [];
-  if (state.omitted > 0) lines.push(`<omitted${attrs({ items: state.omitted })}/>`);
+  const blocks: TimelineBlock[] = [];
+  let lines: string[] = state.omitted > 0 ? [`<omitted${attrs({ items: state.omitted })}/>`] : [];
   let lastDate: string | undefined;
-  for (const item of state.timeline) {
+  state.timeline.forEach((item, i) => {
+    if (i > 0 && i % blockSize === 0) {
+      blocks.push({ text: lines.join("\n"), complete: true });
+      lines = [];
+    }
     const at = clock(displayMs(item));
     if (at.date !== lastDate) {
       lines.push(`<day${attrs({ date: at.date, weekday: at.weekday })}/>`);
       lastDate = at.date;
     }
     lines.push(renderItem(item, at.time, aliasOf));
+  });
+  if (lines.length > 0) {
+    const inLast = state.timeline.length - blocks.length * blockSize;
+    blocks.push({ text: lines.join("\n"), complete: inLast === blockSize });
   }
-  return lines.join("\n");
+  return blocks;
 }
 
 // Appended after the timeline on every run, outside the cached prefix

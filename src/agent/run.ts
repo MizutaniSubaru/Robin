@@ -1,6 +1,13 @@
-import { messageAlias, renderNow, renderTimeline } from "../core/render/index.ts";
+import type { ChatState } from "../core/reducer/index.ts";
+import { messageAlias, renderNow, renderTimelineBlocks } from "../core/render/index.ts";
 import type { EventStore, Projection } from "../core/store/index.ts";
-import { LlmError, type LlmMessage, type LlmProvider, type ToolResultPart } from "../llm/index.ts";
+import {
+  LlmError,
+  type LlmMessage,
+  type LlmProvider,
+  type TextPart,
+  type ToolResultPart,
+} from "../llm/index.ts";
 import type { Logger } from "../log/index.ts";
 import { systemPrompt, triggerLine } from "./prompt.ts";
 import type { SelfSender } from "./self-sender.ts";
@@ -66,10 +73,10 @@ export async function runChat(
     {
       role: "user",
       parts: [
-        { type: "text", text: `<timeline>\n${renderTimeline(state, options)}\n</timeline>`, cache: true },
+        ...timelineParts(state, options),
         {
           type: "text",
-          text: `${renderNow(Date.now(), options)}\n${triggerLine(trigger.reason, messageAlias(trigger.messageId))}`,
+          text: `</timeline>\n${renderNow(Date.now(), options)}\n${triggerLine(trigger.reason, messageAlias(trigger.messageId))}`,
         },
       ],
     },
@@ -148,4 +155,18 @@ export async function runChat(
     trace.endRun(runId, "failed", null);
     throw error;
   }
+}
+
+// One part per window block. The cache breakpoint goes after the last complete block: that prefix
+// is the same text in every run until the next block fills up, so runs read it instead of writing
+// it again. The block still filling up changes with every message and is left out of it
+function timelineParts(state: ChatState, options: RunOptions): TextPart[] {
+  const blocks = renderTimelineBlocks(state, options);
+  const lastComplete = blocks.findLastIndex((block) => block.complete);
+  const parts: TextPart[] = blocks.map((block, i) => ({
+    type: "text",
+    text: `${i === 0 ? "<timeline>\n" : ""}${block.text}\n`,
+    ...(i === lastComplete ? { cache: true } : {}),
+  }));
+  return parts.length > 0 ? parts : [{ type: "text", text: "<timeline>\n" }];
 }

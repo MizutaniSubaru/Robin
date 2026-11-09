@@ -108,6 +108,14 @@ describe("Messages provider", () => {
         },
       ],
     });
+    // Breakpoints: the system prompt, the part the request marks, and the end of the conversation,
+    // which the run's next step reads back
+    const wire = requests[0]?.messages as { content: Record<string, unknown>[] }[];
+    expect(wire.map((m) => m.content.map((block) => "cache_control" in block))).toEqual([
+      [true, false],
+      [false],
+      [true],
+    ]);
     expect(response).toEqual({
       parts: [
         { type: "opaque", provider: "messages", data: thinking },

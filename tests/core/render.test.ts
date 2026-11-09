@@ -6,6 +6,7 @@ import {
   renderFormatted,
   renderNow,
   renderTimeline,
+  renderTimelineBlocks,
 } from "../../src/core/render/index.ts";
 import { CHAT, createEventFactory, text } from "../fixtures/events.ts";
 
@@ -81,6 +82,59 @@ describe("renderTimeline", () => {
       }),
     ]);
     expect(() => renderTimeline(state, tz)).toThrow(/no alias/);
+  });
+});
+
+describe("renderTimelineBlocks", () => {
+  // n messages from Alice into a window of 6 items dropped 2 at a time
+  function messages(n: number) {
+    const event = createEventFactory();
+    const events = [event({ kind: "alias.assigned", user: alice, alias: "u1", name: "Alice" })];
+    for (let i = 1; i <= n; i++) {
+      events.push(
+        event({
+          kind: "message.created",
+          messageId: String(i),
+          sender: alice,
+          senderName: "Alice",
+          replyTo: null,
+          forwardedFrom: null,
+          content: text(`m${i}`),
+        }),
+      );
+    }
+    return reduce(initialState(CHAT, { maxItems: 6, blockSize: 2 }), events);
+  }
+  const ids = (state: ReturnType<typeof messages>) =>
+    renderTimelineBlocks(state, tz).map((b) => [
+      b.complete,
+      [...b.text.matchAll(/id="m(\d+)"/g)].map((m) => m[1]),
+    ]);
+
+  test("cuts where the window trims; only the last block may be incomplete", () => {
+    expect(ids(messages(5))).toEqual([
+      [true, ["1", "2"]],
+      [true, ["3", "4"]],
+      [false, ["5"]],
+    ]);
+    // After a trim the cuts stay on the same messages
+    expect(ids(messages(7))).toEqual([
+      [true, ["3", "4"]],
+      [true, ["5", "6"]],
+      [false, ["7"]],
+    ]);
+    expect(renderTimelineBlocks(messages(7), tz)[0]?.text).toStartWith('<omitted items="2"/>');
+    expect(renderTimeline(messages(5), tz)).toBe(
+      renderTimelineBlocks(messages(5), tz)
+        .map((b) => b.text)
+        .join("\n"),
+    );
+  });
+
+  test("a complete block renders the same text while later messages come in", () => {
+    const before = renderTimelineBlocks(messages(4), tz);
+    const after = renderTimelineBlocks(messages(5), tz);
+    expect(after.slice(0, 2)).toEqual(before);
   });
 });
 
