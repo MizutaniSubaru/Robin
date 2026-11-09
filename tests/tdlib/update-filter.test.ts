@@ -45,10 +45,12 @@ describe("createUpdateFilter", () => {
     for (const type of types) expect(filter.keep(update({ "@type": type, chat_id: -100 }))).toBe(false);
   });
 
-  test("keeps messages in groups and private chats, drops channels and secret chats", () => {
+  test("keeps messages in groups and private chats, only names of channels, nothing of secret chats", () => {
     const filter = createUpdateFilter("user");
     expect(filter.keep(newChat(-1001, supergroup(false)))).toBe(true);
-    expect(filter.keep(newChat(-1002, supergroup(true)))).toBe(false);
+    // Channels send and forward into groups: the adapter needs their titles
+    expect(filter.keep(newChat(-1002, supergroup(true)))).toBe(true);
+    expect(filter.keep(update({ "@type": "updateChatTitle", chat_id: -1002, title: "news" }))).toBe(true);
     expect(filter.keep(newChat(-3, basicGroup))).toBe(true);
     expect(filter.keep(newChat(4, privateChat))).toBe(true);
     expect(filter.keep(newChat(5, secretChat))).toBe(false);

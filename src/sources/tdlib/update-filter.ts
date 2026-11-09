@@ -3,7 +3,8 @@ import type { AccountName } from "./account.ts";
 
 // Decides which TDLib updates are worth persisting in raw_updates.
 // Kept: whatever the adapter needs to rebuild events (messages, edits, deletions, reactions,
-// membership, chat and user names, send results). Everything else is dropped: typing and presence,
+// membership, chat and user names, send results), and nothing it does not: the adapter is fed this
+// filter's output, so running it again over raw_updates rebuilds the same events. Everything else is dropped: typing and presence,
 // read state, unread counters, chat list order, notifications, files, options, stickers, themes,
 // calls, stories, payments, and bot features Robin does not use.
 //
@@ -36,7 +37,9 @@ export function createUpdateFilter(account: AccountName): UpdateFilter {
   function keepChatUpdate(type: td.Update["@type"], chatId: number): boolean {
     const kind = chatKinds.get(chatId);
     if (kind === undefined) throw new Error(`${type} for chat ${chatId} arrived before its updateNewChat`);
-    if (kind === "channel" || kind === "secret") return false;
+    if (kind === "secret") return false;
+    // A channel's name is needed for messages it sends or forwards into groups; nothing else of it is
+    if (kind === "channel") return !isBot && type === "updateChatTitle";
     if (isBot && kind === "group") return BOT_GROUP_UPDATES.has(type);
     return true;
   }
@@ -45,7 +48,7 @@ export function createUpdateFilter(account: AccountName): UpdateFilter {
     const kind = chatKind(chat.type);
     chatKinds.set(chat.id, kind);
     if (isBot) return kind === "private";
-    return kind !== "channel" && kind !== "secret";
+    return kind !== "secret";
   }
 
   function keepUser(user: td.user): boolean {

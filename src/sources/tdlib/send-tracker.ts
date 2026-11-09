@@ -11,8 +11,9 @@ interface Waiter {
 export interface SendTracker {
   // Resolves with the final message once TDLib confirms the send of the temporary message tempId in chatId.
   // Safe to call after the confirmation already arrived: the hub delivers a whole worker batch
-  // synchronously, so updateMessageSendSucceeded can land before the caller's await resumes
-  wait(chatId: number, tempId: number, timeoutMs: number): Promise<td.message>;
+  // synchronously, so updateMessageSendSucceeded can land before the caller's await resumes.
+  // Without timeoutMs it waits for good: TDLib always reports a final state while it runs
+  wait(chatId: number, tempId: number, timeoutMs?: number): Promise<td.message>;
   dispose(): void;
 }
 
@@ -63,12 +64,17 @@ export function createSendTracker(onUpdate: (listener: UpdateListener) => () => 
         return Promise.reject(new Error(`Already waiting for message ${tempId} in chat ${chatId}`));
       }
       return new Promise<td.message>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          waiters.delete(key);
-          reject(
-            new Error(`No send confirmation for message ${tempId} in chat ${chatId} in ${timeoutMs} ms`),
-          );
-        }, timeoutMs);
+        const timer =
+          timeoutMs === undefined
+            ? undefined
+            : setTimeout(() => {
+                waiters.delete(key);
+                reject(
+                  new Error(
+                    `No send confirmation for message ${tempId} in chat ${chatId} in ${timeoutMs} ms`,
+                  ),
+                );
+              }, timeoutMs);
         waiters.set(key, {
           settle(outcome) {
             clearTimeout(timer);

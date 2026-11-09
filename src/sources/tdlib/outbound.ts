@@ -1,0 +1,110 @@
+import type { TextEntity } from "../../core/events/index.ts";
+import type * as td from "../../tdlib-api/td-api.ts";
+import type { TdAccount } from "./account.ts";
+import { toTdEntities } from "./entities.ts";
+import { TdError } from "./errors.ts";
+import { chatIdOf } from "./keys.ts";
+import { toServerMessageId, toTdMessageId } from "./message-id.ts";
+import type { SendTracker } from "./send-tracker.ts";
+
+// ok: false when Telegram said no (bad request, no rights, flood wait): final, the message failed.
+// Any other error is thrown: Robin does not know what happened, and the message stays pending
+export type SendOutcome =
+  | {
+      ok: true;
+      messageId: string;
+      // Server time, seconds
+      date: number;
+    }
+  | { ok: false; error: string };
+
+export interface TelegramSender {
+  // Longest text Telegram takes in one message, in UTF-16 units
+  readonly maxTextLength: number;
+  // Resolves once Telegram confirmed the message. onAccepted fires when TDLib took it and handed
+  // out the temporary id that a later restart can match
+  send(
+    chat: string,
+    text: { text: string; entities: readonly TextEntity[] },
+    replyTo: string | null,
+    onAccepted: (tempId: string) => void,
+    signal?: AbortSignal,
+  ): Promise<SendOutcome>;
+  // After a restart: the outcome of a message TDLib accepted before it, if TDLib finishes sending it
+  reconcile(chat: string, tempId: string): Promise<SendOutcome>;
+}
+
+// Everything Robin says goes out through the bot account
+export function createTelegramSender(bot: TdAccount, tracker: SendTracker): TelegramSender {
+  async function confirmed(chatId: number, tempId: number, signal?: AbortSignal): Promise<SendOutcome> {
+    const waiting = tracker.wait(chatId, tempId);
+    let final: td.message;
+    try {
+      final = await (signal ? abortable(waiting, signal) : waiting);
+    } catch (error) {
+      return rejected(error);
+    }
+    const messageId = toServerMessageId(final.id);
+    if (messageId === undefined) throw new Error(`Sent message ${final.id} has no server id`);
+    return { ok: true, messageId: String(messageId), date: final.date };
+  }
+
+  return {
+    maxTextLength: 4096,
+    async send(chat, text, replyTo, onAccepted, signal) {
+      const chatId = chatIdOf(chat);
+      let pending: td.message;
+      try {
+        pending = await bot.invoke({
+          "@type": "sendMessage",
+          chat_id: chatId,
+          ...(replyTo === null
+            ? {}
+            : {
+                reply_to: {
+                  "@type": "inputMessageReplyToMessage",
+                  message_id: toTdMessageId(Number(replyTo)),
+                  checklist_task_id: 0,
+                  poll_option_id: "",
+                },
+              }),
+          input_message_content: {
+            "@type": "inputMessageText",
+            text: { "@type": "formattedText", text: text.text, entities: toTdEntities(text.entities) },
+            clear_draft: false,
+          },
+        });
+      } catch (error) {
+        return rejected(error);
+      }
+      onAccepted(String(pending.id));
+      return confirmed(chatId, pending.id, signal);
+    },
+    reconcile(chat, tempId) {
+      return confirmed(chatIdOf(chat), Number(tempId));
+    },
+  };
+}
+
+function rejected(error: unknown): SendOutcome {
+  if (error instanceof TdError) return { ok: false, error: `${error.code}: ${error.tdMessage}` };
+  throw error;
+}
+
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}

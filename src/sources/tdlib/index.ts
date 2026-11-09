@@ -12,11 +12,14 @@ import { createTdHub, type TdHub } from "./hub.ts";
 
 export type * as td from "../../tdlib-api/td-api.ts";
 export type { AccountIdentity, AccountName, TdAccount } from "./account.ts";
+export { createTelegramAdapter, type TelegramAdapter } from "./adapter.ts";
 export { AuthorizationRequiredError, type AuthPrompter } from "./auth.ts";
 export type { TdClient, UpdateListener } from "./client.ts";
 export { TdClosedError, TdError, TdTimeoutError } from "./errors.ts";
 export type { TdHub } from "./hub.ts";
+export { botPrivateChatKey, botUserIdFromToken, chatIdOf, groupChatKey, userKey } from "./keys.ts";
 export { toServerMessageId, toTdMessageId } from "./message-id.ts";
+export { createTelegramSender, type SendOutcome, type TelegramSender } from "./outbound.ts";
 export { createRawUpdateWriter, type RawUpdateWriter } from "./raw-store.ts";
 export { createSendTracker, type SendTracker } from "./send-tracker.ts";
 export { createUpdateFilter, type UpdateFilter } from "./update-filter.ts";
