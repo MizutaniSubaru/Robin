@@ -84,7 +84,7 @@
       }
     },
     {
-      "includes": ["src/core/events/**", "src/core/reducer/**", "src/core/render/**"],
+      "includes": ["src/core/events/**", "src/core/reducer/**", "src/core/render/**", "src/core/markdown/**"],
       "linter": {
         "rules": {
           "style": {
@@ -94,7 +94,7 @@
                 "patterns": [
                   {
                     "group": ["bun:*", "node:*", "drizzle-orm", "drizzle-orm/**", "@logtape/**"],
-                    "message": "core/events, core/reducer and core/render are pure: no I/O, database or logging."
+                    "message": "core/events, core/reducer, core/render and core/markdown are pure: no I/O, database or logging."
                   },
                   {
                     "group": [
@@ -112,7 +112,7 @@
                       "**/llm/**",
                       "**/media/**"
                     ],
-                    "message": "core/events, core/reducer and core/render may only import each other and zod; pass anything else in as arguments."
+                    "message": "core/events, core/reducer, core/render and core/markdown may only import each other and zod; pass anything else in as arguments."
                   }
                 ]
               }
