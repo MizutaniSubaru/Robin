@@ -206,11 +206,51 @@ describe("createTelegramAdapter", () => {
     expect(a.adapt("user", editedAt, T + 1)).toMatchObject([
       {
         serverDate: 1793954153,
-        body: { kind: "message.edited", messageId: "514", content: [{ text: "你好robin 你是谁" }] },
+        body: {
+          kind: "message.edited",
+          messageId: "514",
+          editKey: String(T + 1),
+          content: [{ text: "你好robin 你是谁" }],
+        },
       },
     ]);
     // Only the reply markup changed
     expect(a.adapt("user", editedAt, T + 2)).toEqual([]);
+  });
+
+  // Regression: edits were told apart by their edit date, which has whole seconds, so a bot
+  // streaming its reply by editing several times a second lost every edit but the first
+  test("edits within one second are told apart", () => {
+    const a = adapter();
+    a.adapt("user", newChat(GROUP, supergroup), T);
+    const edit = (text: string, receivedAt: number) => {
+      a.adapt(
+        "user",
+        update({
+          "@type": "updateMessageContent",
+          chat_id: GROUP,
+          message_id: 538968064,
+          new_content: { "@type": "messageText", text: formatted(text) },
+        }),
+        receivedAt,
+      );
+      return a.adapt(
+        "user",
+        update({
+          "@type": "updateMessageEdited",
+          chat_id: GROUP,
+          message_id: 538968064,
+          edit_date: 1793954153,
+        }),
+        receivedAt + 1,
+      );
+    };
+    const keys = [edit("He", T), edit("Hello", T + 300_000), edit("Hello!", T + 600_000)].map((items) =>
+      items.map((item) =>
+        item.type === "event" && item.body.kind === "message.edited" ? item.body.editKey : "",
+      ),
+    );
+    expect(keys).toEqual([[String(T + 1)], [String(T + 300_001)], [String(T + 600_001)]]);
   });
 
   // Regression: a link preview arriving made TDLib send new content with edit_date 0, which became

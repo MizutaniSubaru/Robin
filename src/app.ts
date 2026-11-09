@@ -9,6 +9,7 @@ import {
   type AccountName,
   botUserIdFromToken,
   createAccount,
+  createIngest,
   createRawUpdateWriter,
   createSendTracker,
   createTelegramAdapter,
@@ -47,20 +48,17 @@ export async function createApp(
   const hub = startTdHub(config, paths, lc, fatal);
   const adapter = createTelegramAdapter({ botUserId: botUserIdFromToken(env.botToken) });
 
-  // Started one after the other: the user account may prompt for a login on the terminal.
-  // Everything kept goes to raw_updates and through the adapter alike, so replaying raw_updates
-  // rebuilds the same events
+  const ingestLog = getLogger("ingest");
+
+  // Started one after the other: the user account may prompt for a login on the terminal
   const openAccount = async (
     name: AccountName,
     subscribe?: (account: TdAccount) => void,
   ): Promise<TdAccount> => {
     const account = createAccount(hub, config, paths, env, lc, { name, autoRestart: true, onFatal: fatal });
-    const filter = createUpdateFilter(name);
-    account.onUpdate((update, receivedAt) => {
-      if (!filter.keep(update)) return;
-      rawUpdates.push(name, update, receivedAt);
-      for (const item of adapter.adapt(name, update, receivedAt)) inbound.accept(item);
-    });
+    account.onUpdate(
+      createIngest(name, { filter: createUpdateFilter(name), rawUpdates, adapter, inbound, log: ingestLog }),
+    );
     subscribe?.(account);
     await account.start();
     return account;
@@ -99,6 +97,7 @@ export async function createApp(
       },
       allowedChats: config.agent.allowed_chats,
       self: { username: bot.me.username, userKey: userKey(bot.me.userId) },
+      privateDebounceMs: config.agent.private_debounce_ms,
       onFatal: fatal,
       log: agentLog,
     });

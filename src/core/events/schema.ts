@@ -76,7 +76,15 @@ export const EventBody = z.discriminatedUnion("kind", [
     forwardedFrom: z.string().nullable(),
     content: Content,
   }),
-  z.object({ kind: z.literal("message.edited"), messageId: MessageId, content: Content }),
+  z.object({
+    kind: z.literal("message.edited"),
+    messageId: MessageId,
+    // Tells this edit apart from the message's other edits. Opaque, built by the source adapter from
+    // the update that carried the edit, so adapting that update again gives the same key. Not the
+    // edit date: Telegram's has whole seconds, and a bot streaming its reply edits within one
+    editKey: z.string().min(1),
+    content: Content,
+  }),
   z.object({ kind: z.literal("message.deleted"), messageId: MessageId }),
   // Derived by the store the first time a user is referenced in a chat; never changes afterwards
   z.object({
@@ -135,14 +143,12 @@ export function parseEvent(meta: unknown, body: unknown): RobinEvent {
 }
 
 // Idempotency within a chat (UNIQUE(chat, dedup_key)); null means every copy is kept
-export function dedupKeyOf(body: EventBody, serverDate: number | null): string | null {
+export function dedupKeyOf(body: EventBody): string | null {
   switch (body.kind) {
     case "message.created":
       return `msg:${body.messageId}`;
     case "message.edited":
-      // Every edit has its own edit date; without one two edits could not be told apart
-      if (serverDate === null) throw new Error(`message.edited ${body.messageId} has no edit date`);
-      return `edit:${body.messageId}:${serverDate}`;
+      return `edit:${body.messageId}:${body.editKey}`;
     case "message.deleted":
       return `del:${body.messageId}`;
     case "alias.assigned":

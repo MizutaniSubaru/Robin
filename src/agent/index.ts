@@ -28,6 +28,7 @@ export interface AgentSetup {
   options: RunOptions;
   allowedChats: readonly string[];
   self: SchedulerOptions["self"];
+  privateDebounceMs: number;
   onFatal(error: Error): void;
   log: Logger;
 }
@@ -46,6 +47,7 @@ export function startAgent(setup: AgentSetup): Scheduler {
   return createScheduler(setup.store, {
     allowedChats: setup.allowedChats,
     self: setup.self,
+    privateDebounceMs: setup.privateDebounceMs,
     run: (chat, trigger, signal) => runChat(deps, chat, trigger, signal),
     onFatal: setup.onFatal,
     log: setup.log,

@@ -138,7 +138,7 @@ function deps(provider: LlmProvider, outbound: Outbound): RunDeps {
   };
 }
 
-const trigger: Trigger = { reason: "mention", messageId: "41" };
+const trigger: Trigger = { reason: "mention", messageId: "41", ts: T0 };
 
 describe("runChat", () => {
   test("renders the chat, sends through Pipeline B, ends the turn, and traces everything", async () => {
@@ -260,6 +260,100 @@ describe("runChat", () => {
     ).toEqual(["failed", "sent", "sent"]);
   });
 
+  // Regression: the run kept the chat as it was at its start, so messages arriving meanwhile were
+  // invisible until the next run, and reply_to refused them
+  test("what happens during a run is shown before its next step", async () => {
+    store.commitInbound(inbound(GROUP, "41"));
+    const turns: AssistantPart[][] = [
+      [call("send_message", { text: "on it", reply_to: null }, "c1")],
+      [call("send_message", { text: "and you", reply_to: "m42" }, "c2")],
+      [call("end_turn", {})],
+    ];
+    const requests: LlmRequest[] = [];
+    let arrivedTs = 0;
+    const provider: LlmProvider = {
+      name: "scripted",
+      kind: "messages",
+      model: "test-model",
+      complete(request) {
+        requests.push(structuredClone(request));
+        if (requests.length === 1) {
+          // Arrives while the model is thinking about its first step
+          const arrived = store.commitInbound(inbound(GROUP, "42", { content: text("me too") }, T0 + 10));
+          arrivedTs = arrived.at(-1)?.ts ?? 0;
+          store.commitInbound({
+            ...inbound(GROUP, "41"),
+            receivedAt: T0 + 11,
+            body: { kind: "message.edited", messageId: "41", editKey: "1", content: text("hi robin!") },
+          });
+        }
+        const parts = turns.shift();
+        if (!parts) throw new Error("Script ran out");
+        return Promise.resolve({
+          wireRequest: {},
+          wireResponse: {},
+          response: {
+            parts,
+            stopReason: "tool_use",
+            model: "test-model",
+            usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+          },
+        });
+      },
+    };
+    const { outbound, sent } = fakeOutbound();
+    const readTs = await runChat(deps(provider, outbound), GROUP, trigger, new AbortController().signal);
+
+    const update = requests[1]?.messages.at(-1);
+    expect(requests[1]?.messages.at(-2)?.role).toBe("tool");
+    if (update?.role !== "user") throw new Error("expected an update");
+    const shown = update.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
+    // The new message and the edited one, as they read now; not Robin's own "on it"
+    expect(shown).toStartWith("<update>\n<day ");
+    expect(shown).toContain('<message id="m41" from="u1" name="Alice"');
+    expect(shown).toContain('edited="true">hi robin!</message>');
+    expect(shown).toContain('id="m42"');
+    expect(shown).toContain("me too");
+    expect(shown).not.toContain("on it");
+    expect(shown).toContain("</update>\n<now ");
+    // reply_to checks the newer state too
+    expect(sent.map((s) => [s.text, s.replyTo])).toEqual([
+      ["on it", null],
+      ["and you", "42"],
+    ]);
+    // Nothing new before the last step: no update
+    expect(requests[2]?.messages.at(-1)?.role).toBe("tool");
+    expect(readTs).toBeGreaterThanOrEqual(arrivedTs);
+  });
+
+  test("a run that is stopped sends nothing more", async () => {
+    store.commitInbound(inbound(GROUP, "41"));
+    const abort = new AbortController();
+    const provider: LlmProvider = {
+      name: "scripted",
+      kind: "messages",
+      model: "test-model",
+      complete() {
+        // The model answers just as Robin starts stopping
+        abort.abort(new Error("stopping"));
+        return Promise.resolve({
+          wireRequest: {},
+          wireResponse: {},
+          response: {
+            parts: [call("send_message", { text: "late", reply_to: null })],
+            stopReason: "tool_use",
+            model: "test-model",
+            usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+          },
+        });
+      },
+    };
+    const { outbound, sent } = fakeOutbound();
+    await runChat(deps(provider, outbound), GROUP, trigger, abort.signal);
+    expect(sent).toEqual([]);
+    expect(db.orm.select().from(schema.agentRuns).all()).toMatchObject([{ status: "aborted" }]);
+  });
+
   test("a failed model call ends the run as failed and is recorded", async () => {
     store.commitInbound(inbound(GROUP, "41"));
     const provider: LlmProvider = {
@@ -305,27 +399,30 @@ describe("createSelfSender.recover", () => {
 });
 
 describe("createScheduler", () => {
-  function schedule(allowedChats: string[]) {
+  function schedule(allowedChats: string[], privateDebounceMs = 0) {
     const runs: [string, Trigger][] = [];
-    let release: () => void = () => {};
+    let release: (readTs: number) => void = () => {};
     const scheduler = createScheduler(store, {
       allowedChats,
       self: { username: "robin_bot", userKey: "tg:user:900" },
+      privateDebounceMs,
       run: (chat, t) => {
         runs.push([chat, t]);
-        return new Promise<void>((resolve) => (release = resolve));
+        return new Promise<number>((resolve) => (release = resolve));
       },
       onFatal: (error) => {
         throw error;
       },
       log,
     });
-    return { runs, scheduler, release: () => release() };
+    // readTs: how far the run showed the chat to the model; by default nothing beyond its start
+    return { runs, scheduler, release: (readTs = 0) => release(readTs) };
   }
 
   test("private messages, @mentions and replies to Robin trigger; other messages do not", async () => {
     const { runs, scheduler, release } = schedule([GROUP, DM]);
     store.commitInbound(inbound(DM, "1"));
+    await Bun.sleep(1);
     release();
     await Bun.sleep(0);
     store.commitInbound(inbound(GROUP, "2"));
@@ -371,13 +468,92 @@ describe("createScheduler", () => {
     const { runs, scheduler, release } = schedule([DM]);
     store.commitInbound(inbound("tg:bot:8", "1"));
     store.commitInbound(inbound(DM, "2"));
+    await Bun.sleep(1);
     store.commitInbound(inbound(DM, "3", {}, T0 + 1));
+    await Bun.sleep(1);
     store.commitInbound(inbound(DM, "4", {}, T0 + 2));
+    await Bun.sleep(1);
     expect(runs.map(([, t]) => t.messageId)).toEqual(["2"]);
     release();
     await Bun.sleep(0);
     expect(runs.map(([, t]) => t.messageId)).toEqual(["2", "4"]);
     release();
     await scheduler.stop();
+  });
+
+  test("a private chat runs once it goes quiet, on its latest message; groups do not wait", async () => {
+    const { runs, scheduler, release } = schedule([DM, GROUP], 50);
+    store.commitInbound(inbound(DM, "1"));
+    await Bun.sleep(30);
+    store.commitInbound(inbound(DM, "2", {}, T0 + 1));
+    await Bun.sleep(30);
+    // 60 ms after the first message, but only 30 after the second
+    expect(runs).toEqual([]);
+    const mention = { type: "mention" as const, offset: 0, length: 10 };
+    store.commitInbound(
+      inbound(
+        GROUP,
+        "3",
+        { content: [{ type: "text", text: "@robin_bot hi", entities: [mention] }] },
+        T0 + 2,
+      ),
+    );
+    expect(runs.map(([chat, t]) => [chat, t.messageId])).toEqual([[GROUP, "3"]]);
+    release();
+    await Bun.sleep(50);
+    expect(runs.map(([chat, t]) => [chat, t.messageId])).toEqual([
+      [GROUP, "3"],
+      [DM, "2"],
+    ]);
+    release();
+    await scheduler.stop();
+  });
+
+  test("no follow-up run for triggers the run already showed to the model", async () => {
+    const { runs, scheduler, release } = schedule([GROUP, DM], 20);
+    const mention = { type: "mention" as const, offset: 0, length: 10 };
+    const mentioning = (id: string, at: number) =>
+      inbound(GROUP, id, { content: [{ type: "text", text: "@robin_bot hi", entities: [mention] }] }, at);
+    store.commitInbound(mentioning("1", T0));
+    // Folded into the run's next step, so it was read: no second run
+    const during = store.commitInbound(mentioning("2", T0 + 1)).at(-1)?.ts ?? 0;
+    release(during);
+    await Bun.sleep(0);
+    expect(runs.map(([, t]) => t.messageId)).toEqual(["1"]);
+
+    store.commitInbound(inbound(DM, "3", {}, T0 + 2));
+    await Bun.sleep(40);
+    expect(runs.map(([, t]) => t.messageId)).toEqual(["1", "3"]);
+    // The run reads this one while its debounce is still waiting
+    const read = store.commitInbound(inbound(DM, "4", {}, T0 + 3)).at(-1)?.ts ?? 0;
+    release(read);
+    await Bun.sleep(40);
+    expect(runs.map(([, t]) => t.messageId)).toEqual(["1", "3"]);
+    await scheduler.stop();
+  });
+
+  // stop() used to give up after 10 s, and the database then closed under runs still writing to it
+  test("stopping waits for every run to end", async () => {
+    const { runs, scheduler, release } = schedule([DM]);
+    store.commitInbound(inbound(DM, "1"));
+    await Bun.sleep(1);
+    expect(runs).toHaveLength(1);
+    let stopped = false;
+    const stopping = scheduler.stop().then(() => {
+      stopped = true;
+    });
+    await Bun.sleep(20);
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  test("stopping drops a private chat still waiting to go quiet", async () => {
+    const { runs, scheduler } = schedule([DM], 20);
+    store.commitInbound(inbound(DM, "1"));
+    await scheduler.stop();
+    await Bun.sleep(40);
+    expect(runs).toEqual([]);
   });
 });

@@ -123,6 +123,27 @@ describe("createEventStore", () => {
     expect(kinds(store.read(CHAT, 0))).toEqual(["alias.assigned", "message.created"]);
   });
 
+  // Regression: edits within one second shared a dedup key and all but the first were dropped
+  test("edits are deduplicated by their edit key, not their edit date", () => {
+    store.commitInbound(message("41", alice, "Alice", T0));
+    const edit = (editKey: string, value: string): InboundEvent => ({
+      type: "event",
+      chat: CHAT,
+      account: "user",
+      receivedAt: T0 + Number(editKey),
+      serverDate: Math.floor(T0 / 1_000_000) + 1,
+      body: { kind: "message.edited", messageId: "41", editKey, content: text(value) },
+      users: {},
+    });
+    expect(kinds(store.commitInbound(edit("1", "He")))).toEqual(["message.edited"]);
+    expect(kinds(store.commitInbound(edit("2", "Hello")))).toEqual(["message.edited"]);
+    expect(store.commitInbound(edit("2", "Hello"))).toEqual([]);
+    const window = { maxItems: 300, blockSize: 50 };
+    expect(createProjection(db, store, log, { window }).load(CHAT).timeline[0]).toMatchObject({
+      content: text("Hello"),
+    });
+  });
+
   test("aliases survive a restart", () => {
     store.commitInbound(message("1", alice, "Alice", T0));
     const reopened = createEventStore(db, log);

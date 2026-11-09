@@ -9,7 +9,7 @@ import type { SelfSender } from "./self-sender.ts";
 export interface ToolContext {
   chat: string;
   runId: string;
-  // The chat as the run saw it at the start
+  // The chat as the model last saw it: the run's start plus every <update> since
   state: ChatState;
   sender: SelfSender;
   maxTextLength: number;

@@ -17,6 +17,7 @@ export { AuthorizationRequiredError, type AuthPrompter } from "./auth.ts";
 export type { TdClient, UpdateListener } from "./client.ts";
 export { TdClosedError, TdError, TdTimeoutError } from "./errors.ts";
 export type { TdHub } from "./hub.ts";
+export { createIngest, type IngestDeps } from "./ingest.ts";
 export { botPrivateChatKey, botUserIdFromToken, chatIdOf, groupChatKey, userKey } from "./keys.ts";
 export { toServerMessageId, toTdMessageId } from "./message-id.ts";
 export { createTelegramSender, type SendOutcome, type TelegramSender } from "./outbound.ts";

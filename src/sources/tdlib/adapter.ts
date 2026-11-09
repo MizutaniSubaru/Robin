@@ -159,6 +159,9 @@ export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAd
       inbound(chat, account, receivedAt, update.edit_date, names, {
         kind: "message.edited",
         messageId: String(messageId),
+        // The update's receive time names it: raw_updates keeps it with the update, and in µs two
+        // edits of one message never share it, while edit_date does within a second
+        editKey: String(receivedAt),
         content: body,
       }),
     ];

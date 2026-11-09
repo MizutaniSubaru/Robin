@@ -21,7 +21,7 @@ function scenario(): RobinEvent[] {
       content: text("hi"),
     }),
     event({ kind: "self.message", runId: "r1", replyTo: "41", content: text("hello") }, { eventId: "s1" }),
-    event({ kind: "message.edited", messageId: "41", content: text("hi!") }),
+    event({ kind: "message.edited", messageId: "41", editKey: "1", content: text("hi!") }),
     event(
       { kind: "self.send_result", target: "s1", result: "sent", messageId: "42", tempId: null, error: null },
       { account: "bot" },

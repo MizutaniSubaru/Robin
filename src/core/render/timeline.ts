@@ -29,11 +29,7 @@ export interface TimelineBlock {
 // text from run to run, which is what a prompt cache breakpoint needs; only the last block grows
 export function renderTimelineBlocks(state: ChatState, options: RenderOptions): TimelineBlock[] {
   const clock = createClock(options.timezone);
-  const aliasOf: AliasOf = (user) => {
-    const entry = state.users[user];
-    if (!entry) throw new Error(`User ${user} has no alias in ${state.chat}`);
-    return entry.alias;
-  };
+  const aliasOf = aliasesOf(state);
   const { blockSize } = state.window;
 
   const blocks: TimelineBlock[] = [];
@@ -58,6 +54,32 @@ export function renderTimelineBlocks(state: ChatState, options: RenderOptions): 
   return blocks;
 }
 
+// What a run has not seen yet: the items of `now` that are new since `seen` or render differently
+// (edited, deleted, renamed), each as it reads now. Robin's own messages are left out: the run sent
+// them and knows. undefined when nothing changed
+export function renderUpdate(seen: ChatState, now: ChatState, options: RenderOptions): string | undefined {
+  const clock = createClock(options.timezone);
+  const line = (item: TimelineItem, aliasOf: AliasOf) =>
+    renderItem(item, clock(displayMs(item)).time, aliasOf);
+  const seenAliases = aliasesOf(seen);
+  const nowAliases = aliasesOf(now);
+  const before = new Map(seen.timeline.map((item) => [item.eventId, line(item, seenAliases)]));
+  const lines: string[] = [];
+  let lastDate: string | undefined;
+  for (const item of now.timeline) {
+    if (item.type === "self_message") continue;
+    const text = line(item, nowAliases);
+    if (before.get(item.eventId) === text) continue;
+    const at = clock(displayMs(item));
+    if (at.date !== lastDate) {
+      lines.push(`<day${attrs({ date: at.date, weekday: at.weekday })}/>`);
+      lastDate = at.date;
+    }
+    lines.push(text);
+  }
+  return lines.length > 0 ? `<update>\n${lines.join("\n")}\n</update>` : undefined;
+}
+
 // Appended after the timeline on every run, outside the cached prefix
 export function renderNow(nowMs: number, options: RenderOptions): string {
   const at = createClock(options.timezone)(nowMs);
@@ -77,6 +99,14 @@ export function messageAlias(messageId: string): string {
 // The inverse of messageAlias, for ids the model passes to tools
 export function parseMessageAlias(alias: string): string | undefined {
   return /^m(\d+)$/.exec(alias)?.[1];
+}
+
+function aliasesOf(state: ChatState): AliasOf {
+  return (user) => {
+    const entry = state.users[user];
+    if (!entry) throw new Error(`User ${user} has no alias in ${state.chat}`);
+    return entry.alias;
+  };
 }
 
 function renderItem(item: TimelineItem, time: string, aliasOf: AliasOf): string {

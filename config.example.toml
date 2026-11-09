@@ -69,8 +69,10 @@ max_output_tokens = 16000
 # provider = "main"
 persona = "You are Robin, a friendly and concise member of this chat."
 # Chats Robin may answer in: "tg:<chat_id>" for groups, "tg:bot:<user_id>" for private chats with the bot.
-# Runs start on every private message, and in groups when Robin is @mentioned or replied to
+# Runs start in private chats once they go quiet, and in groups when Robin is @mentioned or replied to
 allowed_chats = []
+# How long a private chat must be quiet before Robin answers; each new message restarts the wait
+private_debounce_ms = 5000
 max_steps = 8
 max_sends_per_run = 3
 

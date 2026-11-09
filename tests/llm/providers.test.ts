@@ -137,6 +137,30 @@ describe("Messages provider", () => {
     });
   });
 
+  test("an update after tool results joins their turn", async () => {
+    const { fetch, requests } = fakeFetch(200, {
+      id: "msg_1",
+      type: "message",
+      role: "assistant",
+      model: "claude-opus-5-5",
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    const provider = createMessagesProvider({ ...options, fetch });
+    await provider.complete({
+      ...request,
+      messages: [...request.messages, { role: "user", parts: [{ type: "text", text: "<update/>" }] }],
+    });
+    const wire = requests[0]?.messages as { role: string; content: Record<string, unknown>[] }[];
+    expect(wire.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(wire[2]?.content).toEqual([
+      { type: "tool_result", tool_use_id: "call_1", content: '{"ok":true}', is_error: false },
+      { type: "text", text: "<update/>", cache_control: { type: "ephemeral", ttl: "5m" } },
+    ]);
+  });
+
   test("classifies API errors", async () => {
     const { fetch } = fakeFetch(429, {
       type: "error",

@@ -93,7 +93,7 @@ export function createEventStore(db: Db, log: Logger): EventStore {
           tsSource,
           serverDate,
           kind,
-          dedupKey: dedupKeyOf(event, serverDate),
+          dedupKey: dedupKeyOf(event),
           payload,
         })
         .onConflictDoNothing()
@@ -177,7 +177,7 @@ export function createEventStore(db: Db, log: Logger): EventStore {
     commitInbound(item) {
       return commit(() => {
         // A duplicate (already committed) must not derive anything either
-        const key = dedupKeyOf(item.body, item.serverDate);
+        const key = dedupKeyOf(item.body);
         if (key !== null && hasDedupKey(db, item.chat, key)) return [];
         const derived = derive(item.chat, referenced(item), item.receivedAt, item.serverDate);
         return [...derived, event(item.chat, item.account, item.body, item.receivedAt, item.serverDate)];

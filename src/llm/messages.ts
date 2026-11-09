@@ -4,7 +4,6 @@ import type {
   BetaContentBlockParam,
   BetaMessage,
   MessageCreateParamsNonStreaming as BetaMessageCreateParamsNonStreaming,
-  BetaMessageParam,
   BetaTextBlockParam,
 } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 
@@ -57,8 +56,8 @@ export function createMessagesProvider(options: MessagesOptions): LlmProvider {
       model: options.model,
       max_tokens: options.maxOutputTokens,
       system: [{ type: "text", text: request.system, cache_control: cacheControl }],
-      messages: request.messages.map((m, i) =>
-        toWireMessage(m, cacheControl, i === request.messages.length - 1),
+      messages: mergeTurns(
+        request.messages.map((m, i) => toWireMessage(m, cacheControl, i === request.messages.length - 1)),
       ),
       tools: request.tools.map((tool) => ({
         name: tool.name,
@@ -109,8 +108,8 @@ export function createMessagesProvider(options: MessagesOptions): LlmProvider {
 type CacheControl = { type: "ephemeral"; ttl: "5m" | "1h" };
 
 // last: the request's final message, whose last block gets the conversation breakpoint. It is a
-// user turn (the run's first message or tool results): the run only ever appends to it
-function toWireMessage(message: LlmMessage, cacheControl: CacheControl, last: boolean): BetaMessageParam {
+// user turn (the run's first message, tool results or an update): the run only ever appends to it
+function toWireMessage(message: LlmMessage, cacheControl: CacheControl, last: boolean): Turn {
   const cachedAt = (i: number, length: number) => last && i === length - 1;
   switch (message.role) {
     case "user":
@@ -147,6 +146,21 @@ function toWireMessage(message: LlmMessage, cacheControl: CacheControl, last: bo
         })),
       };
   }
+}
+
+type Turn = { role: "user" | "assistant"; content: BetaContentBlockParam[] };
+
+// Tool results are a user turn here, so an <update> right after them is a second one; Messages wants
+// the roles to alternate, with tool results first in their turn
+function mergeTurns(turns: Turn[]): Turn[] {
+  const merged: Turn[] = [];
+  for (const turn of turns) {
+    const previous = merged.at(-1);
+    if (previous?.role === turn.role)
+      merged[merged.length - 1] = { ...turn, content: [...previous.content, ...turn.content] };
+    else merged.push(turn);
+  }
+  return merged;
 }
 
 function toWireAssistantPart(part: AssistantPart): BetaContentBlockParam {

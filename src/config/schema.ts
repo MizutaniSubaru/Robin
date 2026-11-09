@@ -92,6 +92,8 @@ const AgentConfig = z.object({
   // Chat keys the agent may answer in, e.g. "tg:-1001234567890" (group) or "tg:bot:12345" (private
   // chat with the bot). Events are recorded for every chat either way
   allowed_chats: z.array(z.string().regex(/^tg:(bot:)?-?\d+$/)).default([]),
+  // A private chat is answered once it has been quiet this long, so a burst of messages gets one run
+  private_debounce_ms: z.number().int().nonnegative().default(5_000),
   max_steps: z.number().int().positive().default(8),
   max_sends_per_run: z.number().int().positive().default(3),
   window: z

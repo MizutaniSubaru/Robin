@@ -25,7 +25,8 @@ src/
 ├── tdlib-api/    Generated TDLib types (td-api.ts from td_api.tl). Neutral: anyone may import
 ├── sources/      Inputs from the outside world
 │   └── tdlib/    FFI, receive worker, hub, clients, accounts, auth, raw update filter and storage,
-│                 the adapter (updates -> Robin events), keys, the sender (Robin's messages out)
+│                 the ingest (filter -> raw_updates -> adapter), the adapter (updates -> Robin
+│                 events), keys, the sender (Robin's messages out)
 ├── core/
 │   ├── events/   Robin's event types (Zod) and dedup keys. Pure
 │   ├── reducer/  ChatState (Zod) and reduce(state, events). Pure
@@ -55,7 +56,7 @@ TDLib-specific concerns (raw update storage, the adapter, chat keys, sending) be
 
 Every resource registers its cleanup on the `Lifecycle` right after it is acquired; `stop()` undoes them in reverse, so a half-finished startup is undone exactly as far as it got.
 
-Startup order in `app.ts`: open db and migrate -> event store and inbound queues -> raw update writer -> TDLib hub -> accounts (user, then bot; each subscribes before `start()`, the bot's send tracker included) -> recover pending sends -> agent (only with `agent.provider` set). Shutdown is the reverse: runs are aborted, accounts close (their last updates are still stored and adapted), the receive worker stops, buffered raw rows flush, queued inbound events commit, the db closes. Logging belongs to the process and shuts down last.
+Startup order in `app.ts`: open db and migrate -> event store and inbound queues -> raw update writer -> TDLib hub -> accounts (user, then bot; each subscribes before `start()`, the bot's send tracker included) -> recover pending sends -> agent (only with `agent.provider` set). Shutdown is the reverse: runs are aborted and awaited without a time limit (everything a run waits on ends with the abort or its own timeout), accounts close (their last updates are still stored and adapted), the receive worker stops, buffered raw rows flush, queued inbound events commit, the db closes. Logging belongs to the process and shuts down last.
 
 Failures no caller can await (receive loop dead, storage down for good, account gone) go through `ProcessContext.fatal`: log, run the lifecycle, exit 1. Never simulate this with uncaught exceptions or timers.
 
@@ -75,13 +76,13 @@ The user account owns ingress for groups. The bot sends, runs with privacy mode 
 
 ### Adapter
 
-The adapter is fed exactly what the update filter keeps, which is exactly what `raw_updates` stores, and remembers only what those updates taught it (chat kinds and titles, user names, an edit's pending content). Running it over `raw_updates` again rebuilds the same events, so anything it needs must pass the filter. Served: supergroups through the user account, private chats through the bot. TDLib introduces every user and chat before using it; an unknown one is a bug and throws.
+The adapter is fed exactly what the update filter keeps, which is exactly what `raw_updates` stores, and remembers only what those updates taught it (chat kinds and titles, user names, an edit's pending content). Running it over `raw_updates` again rebuilds the same events, so anything it needs must pass the filter. Served: supergroups through the user account, private chats through the bot. TDLib introduces every user and chat before using it; an unknown one is a bug and throws. The ingest is an isolation boundary: an update the adapter throws on is already headed for `raw_updates`, so it is logged and skipped and a replay recovers it. Storing and committing stay fatal.
 
 ### Events and Timestamps
 
 `receivedAt` is wall-clock µs captured in the worker as each item leaves `td_receive`. The store turns it into `ts`: µs, strictly increasing, assigned at commit, so commit order is `ts` order and folding `ts > lastTs` never misses an event. Units: `ts` / `*_ts` / `received_at` µs, `server_date` s, other `*_at` ms.
 
-- Only the store writes `events`, with `eventId` and `ts` assigned there; `UNIQUE(chat, dedup_key)` makes every source event idempotent.
+- Only the store writes `events`, with `eventId` and `ts` assigned there; `UNIQUE(chat, dedup_key)` makes every source event idempotent. Dedup keys come from what identifies an event at the source, never from a platform date: an edit is keyed by the update that carried it, since edit dates have whole seconds.
 - Inbound events commit through per-chat queues in arrival order; only the head commits, once its (async) transform is done. Robin's own events (`self.*`) skip the queues and commit synchronously.
 - Aliases (`u1`, `u2`, ...) and renames are events the store derives the first time a user is referenced in a chat, never renumbered; the renderer reads nothing but state.
 - `reduce` is pure, never mutates its input, trims the window after every event and treats repeats as no-ops, so folding in batches equals folding at once. Snapshots are a cache keyed by `REDUCER_VERSION` and the window; bump the version whenever the same events would fold differently.
@@ -89,7 +90,8 @@ The adapter is fed exactly what the update filter keeps, which is exactly what `
 ### Agent
 
 - Pipeline B: a `self.message` is appended before the platform call; acceptance, confirmation or failure are further `self.send_result` events. Sends have no timeout while running; a send still pending at startup becomes `unknown` and is settled if TDLib finishes it.
-- Robin's own events never trigger a run. Runs of one chat never overlap; triggers during a run fold into one follow-up run.
+- Robin's own events never trigger a run. Runs of one chat never overlap; triggers during a run fold into one follow-up run, skipped when the run already showed them to the model.
+- Before every step after the first, a run folds in what happened meanwhile and shows it as an `<update>`; tools check against that newer state.
 - Model text is never sent: only `send_message` speaks, `end_turn` ends the turn. Bad tool arguments go back to the model as errors; a failed model call ends the run as failed; anything else is a bug and is fatal.
 - Every run is recorded in `agent_runs` / `llm_calls` / `tool_calls` (`bun run inspect`).
 - User-controlled text (names, titles, messages) never goes into the system prompt; it reaches the model only through the renderer, escaped.
