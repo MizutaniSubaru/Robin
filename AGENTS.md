@@ -32,8 +32,8 @@ src/
 │   ├── render/   ChatState -> the XML-like timeline the model reads. Pure
 │   ├── markdown/ The model's Markdown -> text + entities. Pure
 │   └── store/    The only writer of `events`: ts clock, per-chat inbound queues, aliases, snapshots
-├── llm/          Provider-neutral request/response types; one provider per wire protocol: messages (Anthropic
-│                 Messages), chat (OpenAI Chat Completions), responses (OpenAI Responses)
+├── llm/          Provider-neutral request/response types; one provider per wire protocol (Messages, Chat
+│                 Completions, Responses)
 ├── agent/        Scheduler (when to run), run loop, tools, Pipeline B (self-sender), run traces
 ├── db/           Drizzle schema, connection, migrations
 ├── config/       TOML config + environment, validated with Zod
@@ -75,7 +75,7 @@ The user account owns ingress for groups. The bot sends, runs with privacy mode 
 
 ### Adapter
 
-The adapter is fed exactly what the update filter keeps, which is exactly what `raw_updates` stores, and remembers only what those updates taught it (chat kinds and titles, user names, an edit's pending content). Running it over `raw_updates` again rebuilds the same events, so anything it needs must pass the filter. Served: supergroups through the user account, private chats through the bot. TDLib introduces every user and chat before using it; an unknown one is a bug and throws. An edit is new content dated by a following `updateMessageEdited`; content refreshed without an edit date (link previews, buttons) is not an edit.
+The adapter is fed exactly what the update filter keeps, which is exactly what `raw_updates` stores, and remembers only what those updates taught it (chat kinds and titles, user names, an edit's pending content). Running it over `raw_updates` again rebuilds the same events, so anything it needs must pass the filter. Served: supergroups through the user account, private chats through the bot. TDLib introduces every user and chat before using it; an unknown one is a bug and throws.
 
 ### Events and Timestamps
 
@@ -92,8 +92,8 @@ The adapter is fed exactly what the update filter keeps, which is exactly what `
 - Robin's own events never trigger a run. Runs of one chat never overlap; triggers during a run fold into one follow-up run.
 - Model text is never sent: only `send_message` speaks, `end_turn` ends the turn. Bad tool arguments go back to the model as errors; a failed model call ends the run as failed; anything else is a bug and is fatal.
 - Every run is recorded in `agent_runs` / `llm_calls` / `tool_calls` (`bun run inspect`).
-- Nothing a user chose (names, titles, message text, code languages) goes into the system prompt. It reaches the model only in the timeline, escaped; attribute values are also put on one line without invisible characters.
-- Prompt cache breakpoints go only where the next request starts with the same text: after the system prompt, after the timeline's last complete window block (stable across runs), and at the end of the conversation (read by the run's next step).
+- User-controlled text (names, titles, messages) never goes into the system prompt; it reaches the model only through the renderer, escaped.
+- Prompt cache breakpoints go only on prefixes the next request repeats unchanged; keep rendered history byte-stable for that.
 
 ### Storage
 
