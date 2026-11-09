@@ -1,22 +1,20 @@
 # Robin Contributor Guide
 
-Rules for anyone (human or agent) changing Robin. Keep this file short: it records ownership, invariants and conventions. Rationale and long-term design live in focused documents under `docs/`.
+Rules for anyone (human or agent) changing Robin. Keep this file short: it records ownership, invariants and conventions.
 
 **Maintenance rule:** update this file in the same change whenever an ownership boundary, invariant or lifecycle rule changes.
 
-**Design documents:** the design RFC (`docs/private/robin-design.md`) is a first draft, not a spec, and some of its decisions have been dropped. When it disagrees with this file, the current stack or the code, those win; do not bring back what the RFC proposed in their place. Any decision that departs from the RFC updates the RFC in the same change, so the two never drift apart.
-
 ## System Overview
 
-Robin is a Telegram bot built on an append-only event log. Two TDLib accounts feed it: a user account that sees groups as a member does, and the bot account that sends. Raw TDLib updates are stored first; adapters turn them into Robin events; a pure core reduces and renders those events for the agent.
+Robin is a Telegram bot built on an append-only event log. Two TDLib accounts feed it: a user account that sees groups as a member does, and the bot account that sends. Raw TDLib updates are stored first; the adapter turns them into Robin events, which the store commits in order; a pure core folds the log into per-chat state and renders it for the agent, which talks to an LLM through a provider-neutral representation and speaks only through tools.
 
 ## Technology
 
-Bun (runtime, tests, FFI, workers), TypeScript, Biome, SQLite via `bun:sqlite` + Drizzle, Zod, LogTape. TDLib comes from `prebuilt-tdlib` and is loaded with `bun:ffi`.
+Bun (runtime, tests, FFI, workers), TypeScript, Biome, SQLite via `bun:sqlite` + Drizzle, Zod, LogTape. TDLib comes from `prebuilt-tdlib` and is loaded with `bun:ffi`. Models through the official SDKs (`@anthropic-ai/sdk`, `openai`).
 
 ## Commands
 
-`bun run start` / `dev` / `login` / `probe` / `tdlib:types` / `typecheck` / `lint[:fix]` / `test` / `db:generate` / `db:check`.
+`bun run start` / `dev` / `login` / `probe` / `inspect` / `tdlib:types` / `typecheck` / `lint[:fix]` / `test` / `db:generate` / `db:check`.
 
 `bun run check` (typecheck + lint + tests) is the definition of done.
 
@@ -26,12 +24,21 @@ Bun (runtime, tests, FFI, workers), TypeScript, Biome, SQLite via `bun:sqlite` +
 src/
 ├── tdlib-api/    Generated TDLib types (td-api.ts from td_api.tl). Neutral: anyone may import
 ├── sources/      Inputs from the outside world
-│   └── tdlib/    FFI, receive worker, hub, clients, accounts, auth, raw update filter and storage
-├── core/         Robin's own events, reducer and renderer. Pure (see below). Not created yet; its rules already apply
+│   └── tdlib/    FFI, receive worker, hub, clients, accounts, auth, raw update filter and storage,
+│                 the adapter (updates -> Robin events), keys, the sender (Robin's messages out)
+├── core/
+│   ├── events/   Robin's event types (Zod) and dedup keys. Pure
+│   ├── reducer/  ChatState (Zod) and reduce(state, events). Pure
+│   ├── render/   ChatState -> the XML-like timeline the model reads. Pure
+│   ├── markdown/ The model's Markdown -> text + entities. Pure
+│   └── store/    The only writer of `events`: ts clock, per-chat inbound queues, aliases, snapshots
+├── llm/          Provider-neutral request/response types; one provider per wire protocol: messages (Anthropic
+│                 Messages), chat (OpenAI Chat Completions), responses (OpenAI Responses)
+├── agent/        Scheduler (when to run), run loop, tools, Pipeline B (self-sender), run traces
 ├── db/           Drizzle schema, connection, migrations
 ├── config/       TOML config + environment, validated with Zod
 ├── log/          LogTape setup
-├── cli/          One-shot commands (login, probe)
+├── cli/          One-shot commands (login, probe, inspect)
 ├── lifecycle.ts  Ordered cleanup stack
 ├── process.ts    Process shell: config, logging, signals, fatal, exit code
 ├── app.ts        Wiring of the long-running app
@@ -40,15 +47,15 @@ src/
 
 ### Dependency Direction
 
-Dependencies point inward. `db/`, `core/` and `tdlib-api/` never import `sources/`, `cli/` or `app.ts`. `core/events`, `core/reducer` and `core/render` additionally import nothing but each other and Zod: no I/O, database, config or logging. Both rules are enforced by Biome overrides; do not weaken them to make an import compile, move the code instead.
+Dependencies point inward. `db/`, `core/` and `tdlib-api/` never import `sources/`, `agent/`, `cli/` or `app.ts`. `core/events`, `core/reducer`, `core/render` and `core/markdown` additionally import nothing but each other and Zod: no I/O, database, config or logging. Both rules are enforced by Biome overrides; do not weaken them to make an import compile, move the code instead.
 
-TDLib-specific concerns (raw update storage included) belong to `sources/tdlib`. Core only ever sees Robin events.
+TDLib-specific concerns (raw update storage, the adapter, chat keys, sending) belong to `sources/tdlib`. Core and agent only ever see Robin events and opaque keys; the agent reaches Telegram through its `Outbound` interface, which `app.ts` fills with the TDLib sender.
 
 ## Lifecycle
 
 Every resource registers its cleanup on the `Lifecycle` right after it is acquired; `stop()` undoes them in reverse, so a half-finished startup is undone exactly as far as it got.
 
-Startup order in `app.ts`: open db and migrate -> raw update writer -> TDLib hub -> accounts (user, then bot; each subscribes before `start()`). Shutdown is the reverse: accounts close (their last updates are still stored), the receive worker stops, buffered rows flush, the db closes. Logging belongs to the process and shuts down last.
+Startup order in `app.ts`: open db and migrate -> event store and inbound queues -> raw update writer -> TDLib hub -> accounts (user, then bot; each subscribes before `start()`, the bot's send tracker included) -> recover pending sends -> agent (only with `agent.provider` set). Shutdown is the reverse: runs are aborted, accounts close (their last updates are still stored and adapted), the receive worker stops, buffered raw rows flush, queued inbound events commit, the db closes. Logging belongs to the process and shuts down last.
 
 Failures no caller can await (receive loop dead, storage down for good, account gone) go through `ProcessContext.fatal`: log, run the lifecycle, exit 1. Never simulate this with uncaught exceptions or timers.
 
@@ -66,9 +73,27 @@ Failures no caller can await (receive loop dead, storage down for good, account 
 
 The user account owns ingress for groups. The bot sends, runs with privacy mode off, and stores in groups only what the user cannot see (`update-filter.ts`). A send returns only after TDLib's `updateMessageSendSucceeded` / `updateMessageSendFailed`.
 
-### Timestamps
+### Adapter
 
-`receivedAt` is wall-clock µs captured in the worker as each item leaves `td_receive`; it is the ordering source of truth. Units: `ts` / `*_ts` / `received_at` µs, `server_date` s, other `*_at` ms.
+The adapter is fed exactly what the update filter keeps, which is exactly what `raw_updates` stores, and remembers only what those updates taught it (chat kinds and titles, user names, an edit's pending content). Running it over `raw_updates` again rebuilds the same events, so anything it needs must pass the filter. Served: supergroups through the user account, private chats through the bot. TDLib introduces every user and chat before using it; an unknown one is a bug and throws. An edit is new content dated by a following `updateMessageEdited`; content refreshed without an edit date (link previews, buttons) is not an edit.
+
+### Events and Timestamps
+
+`receivedAt` is wall-clock µs captured in the worker as each item leaves `td_receive`. The store turns it into `ts`: µs, strictly increasing, assigned at commit, so commit order is `ts` order and folding `ts > lastTs` never misses an event. Units: `ts` / `*_ts` / `received_at` µs, `server_date` s, other `*_at` ms.
+
+- Only the store writes `events`, with `eventId` and `ts` assigned there; `UNIQUE(chat, dedup_key)` makes every source event idempotent.
+- Inbound events commit through per-chat queues in arrival order; only the head commits, once its (async) transform is done. Robin's own events (`self.*`) skip the queues and commit synchronously.
+- Aliases (`u1`, `u2`, ...) and renames are events the store derives the first time a user is referenced in a chat, never renumbered; the renderer reads nothing but state.
+- `reduce` is pure, never mutates its input, trims the window after every event and treats repeats as no-ops, so folding in batches equals folding at once. Snapshots are a cache keyed by `REDUCER_VERSION` and the window; bump the version whenever the same events would fold differently.
+
+### Agent
+
+- Pipeline B: a `self.message` is appended before the platform call; acceptance, confirmation or failure are further `self.send_result` events. Sends have no timeout while running; a send still pending at startup becomes `unknown` and is settled if TDLib finishes it.
+- Robin's own events never trigger a run. Runs of one chat never overlap; triggers during a run fold into one follow-up run.
+- Model text is never sent: only `send_message` speaks, `end_turn` ends the turn. Bad tool arguments go back to the model as errors; a failed model call ends the run as failed; anything else is a bug and is fatal.
+- Every run is recorded in `agent_runs` / `llm_calls` / `tool_calls` (`bun run inspect`).
+- Nothing a user chose (names, titles, message text, code languages) goes into the system prompt. It reaches the model only in the timeline, escaped; attribute values are also put on one line without invisible characters.
+- Prompt cache breakpoints go only where the next request starts with the same text: after the system prompt, after the timeline's last complete window block (stable across runs), and at the end of the conversation (read by the run's next step).
 
 ### Storage
 
@@ -98,5 +123,3 @@ Code handles only the current data shape. Changing stored data needs a new Drizz
 ## Commits
 
 Conventional Commits, focused changes, docs updated in the same commit. Never commit or push without explicit human instruction. Use the contributor's own Git identity; no AI co-author trailers.
-
-`docs/private/` is local-only and gitignored. Shareable docs go directly under `docs/`.

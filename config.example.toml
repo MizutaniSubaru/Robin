@@ -28,3 +28,53 @@ max_files = 10
 # TDLib's own log in data/logs/tdlib.log: 0 fatal, 1 errors, 2 warnings, 3 info, 4 debug, 5 verbose
 log_verbosity = 2
 use_test_dc = false
+
+# Model providers, by name. API keys come from the environment variable named in api_key_env.
+# kind is the wire protocol, so any service speaking it works through base_url:
+#   messages   Anthropic Messages
+#   chat       OpenAI Chat Completions (DeepSeek and most other compatible services)
+#   responses  OpenAI Responses
+[llm.providers.main]
+kind = "messages"
+model = "claude-opus-5-5"
+# api_key_env = "ANTHROPIC_API_KEY"
+# base_url = "https://api.anthropic.com"
+# low | medium | high | xhigh | max (the model's default when unset)
+# effort = "medium"
+# Let the API re-run a declined request on a fallback model
+refusal_fallback = true
+# Prompt cache lifetime: 5m | 1h
+cache_ttl = "5m"
+max_output_tokens = 16000
+
+# [llm.providers.openai]
+# kind = "responses"
+# model = "gpt-5.5"
+# api_key_env = "OPENAI_API_KEY"
+# none | minimal | low | medium | high | xhigh | max (the model's default when unset)
+# reasoning_effort = "medium"
+
+# [llm.providers.deepseek]
+# kind = "chat"
+# model = "deepseek-v4-pro"
+# base_url = "https://api.deepseek.com"
+# api_key_env = "DEEPSEEK_API_KEY"
+# max_completion_tokens (OpenAI) | max_tokens (most other services, DeepSeek included)
+# max_tokens_param = "max_tokens"
+# minimal | low | medium | high | xhigh | max (the service's default when unset)
+# reasoning_effort = "low"
+
+[agent]
+# Which llm.providers entry to use; leave unset to only record events
+# provider = "main"
+persona = "You are Robin, a friendly and concise member of this chat."
+# Chats Robin may answer in: "tg:<chat_id>" for groups, "tg:bot:<user_id>" for private chats with the bot.
+# Runs start on every private message, and in groups when Robin is @mentioned or replied to
+allowed_chats = []
+max_steps = 8
+max_sends_per_run = 3
+
+# Timeline items the model sees; the oldest block_size items are dropped at once
+[agent.window]
+max_items = 300
+block_size = 50

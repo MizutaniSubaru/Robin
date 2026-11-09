@@ -85,12 +85,36 @@ const LlmConfig = z.object({
   providers: z.record(z.string().min(1), LlmProviderConfig).default({}),
 });
 
-export const ConfigSchema = z.object({
-  timezone: IanaTimezone.default("Asia/Shanghai"),
-  data_dir: z.string().min(1).default("data"),
-  log: LogConfig.prefault({}),
-  tdlib: TdlibConfig.prefault({}),
-  llm: LlmConfig.prefault({}),
+const AgentConfig = z.object({
+  // Provider (a key of llm.providers) the agent talks to; without one Robin only records events
+  provider: z.string().min(1).optional(),
+  persona: z.string().default("You are Robin, a friendly and concise member of this chat."),
+  // Chat keys the agent may answer in, e.g. "tg:-1001234567890" (group) or "tg:bot:12345" (private
+  // chat with the bot). Events are recorded for every chat either way
+  allowed_chats: z.array(z.string().regex(/^tg:(bot:)?-?\d+$/)).default([]),
+  max_steps: z.number().int().positive().default(8),
+  max_sends_per_run: z.number().int().positive().default(3),
+  window: z
+    .object({
+      max_items: z.number().int().positive().default(300),
+      block_size: z.number().int().positive().default(50),
+    })
+    .prefault({})
+    .refine((w) => w.block_size <= w.max_items, { message: "block_size must not exceed max_items" }),
 });
+
+export const ConfigSchema = z
+  .object({
+    timezone: IanaTimezone.default("Asia/Shanghai"),
+    data_dir: z.string().min(1).default("data"),
+    log: LogConfig.prefault({}),
+    tdlib: TdlibConfig.prefault({}),
+    llm: LlmConfig.prefault({}),
+    agent: AgentConfig.prefault({}),
+  })
+  .refine((c) => c.agent.provider === undefined || c.agent.provider in c.llm.providers, {
+    message: "agent.provider must name one of llm.providers",
+    path: ["agent", "provider"],
+  });
 
 export type Config = z.infer<typeof ConfigSchema>;

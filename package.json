@@ -8,6 +8,7 @@
     "dev": "bun --watch src/main.ts",
     "login": "bun src/cli/login.ts",
     "probe": "bun src/cli/probe.ts",
+    "inspect": "bun src/cli/inspect.ts",
     "tdlib:types": "bun scripts/gen-td-api.ts",
     "test": "bun run tdlib:types && bun test",
     "typecheck": "bun run tdlib:types && tsc --noEmit",
