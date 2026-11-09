@@ -20,11 +20,13 @@
     "check": "bun run typecheck && biome check && bun test"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
     "@logtape/file": "^2.4.2",
     "@logtape/logtape": "^2.4.2",
     "@logtape/pretty": "^2.4.2",
     "@logtape/redaction": "^2.4.2",
     "drizzle-orm": "^0.45.4",
+    "openai": "^7.53.0",
     "prebuilt-tdlib": "0.1008069.0",
     "zod": "^4.6.7"
   },
