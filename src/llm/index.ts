@@ -1,3 +1,6 @@
+// LLM: creates the provider a config entry asks for (Messages, Chat Completions or Responses) and
+// re-exports the provider-neutral types
+
 import type { LlmProviderConfig } from "../config/schema.ts";
 import { createChatProvider } from "./chat.ts";
 import { createMessagesProvider } from "./messages.ts";

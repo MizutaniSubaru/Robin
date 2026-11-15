@@ -1,3 +1,6 @@
+// Config: loads and validates config.toml and the Telegram secrets from the environment, and
+// resolves the data paths
+
 import { join, resolve } from "node:path";
 
 import { z } from "zod";

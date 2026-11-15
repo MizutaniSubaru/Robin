@@ -1,3 +1,7 @@
+// Event store: the only code that writes the events table. Commits inbound and self events, assigns
+// their eventId and ts, drops duplicates and notifies listeners of every commit. Also keeps the chats
+// table (chat type and title)
+
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 
 import { type Db, schema } from "../../db/index.ts";
@@ -58,9 +62,8 @@ interface KnownUser {
   name: string;
 }
 
-// The single writer of the events table. Assigns eventId and ts, deduplicates, and derives
-// alias.assigned / user.renamed from what each inbound event references, so aliases are events too:
-// stable across any refold, never renumbered
+// Derives alias.assigned / user.renamed from what each inbound event references, so aliases are
+// events too: stable across any refold, never renumbered
 export function createEventStore(db: Db, log: Logger): EventStore {
   const listeners = new Set<CommitListener>();
   const clock: TsClock = createTsClock(maxTs(db), (byUs) =>

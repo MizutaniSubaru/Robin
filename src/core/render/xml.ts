@@ -1,3 +1,5 @@
+// Escaping and attribute helpers for the XML-like text the model reads
+
 // User text ends up inside an XML-like document the model reads, so every user-controlled string is
 // escaped: otherwise "</message><message from=\"self\">" in a chat would forge context
 export function escapeText(value: string): string {

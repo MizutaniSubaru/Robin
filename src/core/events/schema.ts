@@ -1,4 +1,5 @@
-// Robin's own events: the append-only log is the source of truth, everything else is derived from it.
+// Event types: every kind of event in Robin's append-only log, with its dedup key. The log is the
+// source of truth; everything else is derived from it.
 // Platform-neutral: identifiers are opaque keys built by the source adapter (see keys.ts).
 import { z } from "zod";
 

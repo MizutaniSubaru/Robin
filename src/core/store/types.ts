@@ -1,3 +1,6 @@
+// What sources hand to the store (inbound events, user profiles, chat metadata), and the self.*
+// bodies Robin writes itself
+
 import type { BodyOf, EventBody } from "../events/index.ts";
 
 // Event kinds a source produces; the rest are derived by the store or written by Robin itself

@@ -1,3 +1,4 @@
+// Database schema: every table Robin stores.
 // Time units: ts / *_ts / received_at are microseconds, server_date is seconds,
 // other *_at columns are milliseconds.
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";

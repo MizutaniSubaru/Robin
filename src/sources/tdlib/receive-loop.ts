@@ -1,3 +1,6 @@
+// Receive loop: the body of the receive worker. Calls td_receive, collects the results into batches
+// and posts them to the main thread; stops receiving while the main thread is behind
+
 import { Ctrl, type ReceivedItem, type ReceiveLoopConfig, type WorkerMessage } from "./protocol.ts";
 
 export interface ReceiveLoopDeps {
@@ -10,7 +13,7 @@ export interface ReceiveLoopDeps {
 // How long to wait before rechecking a full queue or a held receive mutex
 const WAIT_MS = 200;
 
-// The receive loop, kept free of FFI and Worker globals so it can be tested in-process.
+// Kept free of FFI and Worker globals so it can be tested in-process.
 // Runs until OWNER no longer names this generation; throws only on bugs, which crash the worker
 export function runReceiveLoop(
   ctrl: Int32Array,

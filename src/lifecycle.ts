@@ -1,6 +1,8 @@
+// Lifecycle: the ordered cleanup stack behind startup and shutdown
+
 type Cleanup = () => void | Promise<void>;
 
-// A stack of cleanups: register each resource right after acquiring it,
+// Register each resource right after acquiring it,
 // stop() undoes them in reverse, so a half-finished startup is undone exactly as far as it got
 export interface Lifecycle {
   defer(name: string, cleanup: Cleanup): void;

@@ -1,3 +1,6 @@
+// The TDLib source's public surface, plus helpers that start the hub and create accounts with their
+// shutdown registered
+
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -27,8 +30,6 @@ export { createUpdateFilter, type UpdateFilter } from "./update-filter.ts";
 
 const APP_VERSION = "0.0.0";
 
-// Starts the process-wide hub and registers its shutdown on lc.
-// onFatal fires when receiving cannot recover in-process; callers should exit
 export function startTdHub(
   config: Config,
   paths: Paths,
@@ -57,7 +58,6 @@ export interface AccountSetup {
   databaseDirectory?: string | undefined;
 }
 
-// Creates the account and registers its close on lc. Call start() after subscribing to updates
 export function createAccount(
   hub: TdHub,
   config: Config,

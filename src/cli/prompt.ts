@@ -1,3 +1,5 @@
+// Terminal prompts for CLI commands; askSecret does not echo what is typed
+
 import { createInterface } from "node:readline/promises";
 
 export class PromptCancelledError extends Error {

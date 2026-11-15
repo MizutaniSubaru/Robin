@@ -1,3 +1,5 @@
+// Scheduler: decides when the agent runs on a chat, and keeps runs of one chat from overlapping
+
 import type { RobinEvent } from "../core/events/index.ts";
 import { DERIVED_ACCOUNT, type EventStore } from "../core/store/index.ts";
 import type { Logger } from "../log/index.ts";
@@ -28,10 +30,9 @@ interface ChatRuns {
   next: Trigger | undefined;
 }
 
-// Starts runs: in private chats once messages stop coming for privateDebounceMs, in groups as soon as
-// Robin is mentioned or replied to. Robin's own events never trigger anything. Runs of one chat never
-// overlap; triggers arriving meanwhile fold into a single follow-up run, unless the run already showed
-// them to the model
+// A run starts in private chats once messages stop coming for privateDebounceMs, in groups as soon as
+// Robin is mentioned or replied to. Triggers arriving during a run fold into a single follow-up run,
+// skipped when the run already showed them to the model
 export function createScheduler(store: EventStore, options: SchedulerOptions): Scheduler {
   const { log } = options;
   const allowed = new Set(options.allowedChats);

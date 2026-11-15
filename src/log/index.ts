@@ -1,3 +1,5 @@
+// Logging: sets up LogTape (console and rotating file sinks) and masks secrets in what is logged
+
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

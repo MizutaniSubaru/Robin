@@ -1,7 +1,9 @@
+// Reducer: folds a chat's events into its ChatState
+
 import type { EventOf, RobinEvent } from "../events/index.ts";
 import type { ChatState, SelfMessageItem, SelfStatus, TimelineItem } from "./state.ts";
 
-// Folds events into the chat state. Pure: the input state is never modified, so a snapshot can be
+// Pure: the input state is never modified, so a snapshot can be
 // shared. Applying events one batch at a time gives the same result as applying them all at once
 // (the window is trimmed after every event, not per batch), which is what makes snapshots safe.
 // Every case is idempotent: a repeated event, or one about an item already trimmed away, is a no-op

@@ -4,7 +4,7 @@
 // The main thread calls td_send / td_execute itself (both are thread-safe), so requests never wait on the worker.
 // Control flows through a SharedArrayBuffer, which the worker can read while blocked in its loop.
 
-// Int32 slots of the control block
+// the control block
 export const Ctrl = {
   // Generation allowed to receive; anything else (0 included) tells a worker to leave its loop
   OWNER: 0,

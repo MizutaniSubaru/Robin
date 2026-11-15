@@ -1,3 +1,5 @@
+// Renders one message's content (formatted text, stickers, unsupported parts) as timeline markup
+
 import type { ContentPart, TextEntity } from "../events/index.ts";
 import { attrs, escapeText } from "./xml.ts";
 

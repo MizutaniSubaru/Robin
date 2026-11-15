@@ -1,3 +1,6 @@
+// Renderer: turns a ChatState into the XML-like text the model reads: the timeline, the <update>
+// of what changed since the model last looked, and the current time
+
 import type { ReplyRef } from "../events/index.ts";
 import type { ChatState, MessageItem, SelfMessageItem, TimelineItem } from "../reducer/index.ts";
 import { type AliasOf, renderContent } from "./text.ts";
@@ -8,10 +11,9 @@ export interface RenderOptions {
   timezone: string;
 }
 
-// The chat as the model reads it: one line per item, oldest first, with a <day> line whenever the
-// date changes. Pure, and it reads only the state: whatever has been rendered once renders the same
-// way again (until an edit, deletion, send result or window trim touches it), which keeps the
-// model's prompt cache valid across runs
+// One line per item, oldest first, with a <day> line whenever the date changes. Reads only the state,
+// so an item renders the same way every run until it is edited, deleted or settled: the model's
+// prompt cache depends on that
 export function renderTimeline(state: ChatState, options: RenderOptions): string {
   return renderTimelineBlocks(state, options)
     .map((block) => block.text)

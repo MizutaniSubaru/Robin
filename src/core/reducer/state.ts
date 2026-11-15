@@ -1,4 +1,5 @@
-// The per-chat projection of the event log. A Zod schema rather than plain types, so a stored
+// Chat state: what reduce() builds from one chat's events, i.e. the recent timeline window and the
+// users with their aliases. A Zod schema rather than plain types, so a stored
 // snapshot is parsed back instead of trusted
 import { z } from "zod";
 

@@ -1,3 +1,6 @@
+// Authorization: walks a TDLib client through login. The bot logs in with its token; the user
+// account reuses its stored session, or asks for phone number, code and password through a prompter
+
 import type { Logger } from "../../log/index.ts";
 import type * as td from "../../tdlib-api/td-api.ts";
 import type { TdClient } from "./client.ts";
@@ -111,7 +114,6 @@ export async function authorize(
       case "authorizationStateClosed":
         throw new TdClosedError(`Client is ${type} during authorization`);
       default: {
-        // Compile error when the schema gains a state this switch does not handle
         const unhandled: never = state;
         throw new Error(`Unhandled authorization state: ${JSON.stringify(unhandled)}`);
       }

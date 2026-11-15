@@ -1,3 +1,6 @@
+// Run: one agent turn on one chat. Builds the request from the rendered chat, calls the model in a
+// loop, executes its tool calls, and records everything in the trace
+
 import { type ChatState, reduce } from "../core/reducer/index.ts";
 import {
   messageAlias,
@@ -45,10 +48,6 @@ export interface RunDeps {
   options: RunOptions;
 }
 
-// One run: the model looks at the chat as it is now and may send messages until it ends its turn.
-// Before every step after the first, what happened in the chat meanwhile is added as an <update>,
-// and tools check against that newer state. Plain text it writes is never sent; only send_message
-// speaks. A failed model call ends the run (recorded); anything else is a bug and propagates.
 // Resolves to the ts up to which the model has read the chat: a trigger at or before it was seen
 export async function runChat(
   deps: RunDeps,

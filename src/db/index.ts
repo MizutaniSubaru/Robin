@@ -1,3 +1,5 @@
+// Database: opens SQLite connections (the one writer, read-only readers) and runs the migrations
+
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";

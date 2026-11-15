@@ -114,7 +114,6 @@ async function describeChat(user: TdAccount): Promise<td.ChatType> {
   return type;
 }
 
-// T4
 async function probeIds(ctx: ProcessContext): Promise<void> {
   const user = await (await openTd(ctx))("user");
   await describeChat(user);
@@ -174,7 +173,6 @@ async function probeIds(ctx: ProcessContext): Promise<void> {
   out(`\n${consistent}/${messages.length} messages: id / 2^20 equals the server id in the message link`);
 }
 
-// T1-T3
 async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<void> {
   const botDatabase = values["fresh-bot"] ? mkdtempSync(join(ctx.paths.tdlib, "probe-bot-")) : undefined;
   if (botDatabase)
@@ -265,7 +263,6 @@ async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<voi
   await reply("cold");
   await react("cold");
 
-  // Warm up
   await attempt(steps, "preheat getChat", async () => {
     const c = await bot.invoke({ "@type": "getChat", chat_id: chatId });
     return c.title;
@@ -294,7 +291,6 @@ async function probeOutbound(ctx: ProcessContext, serverId: number): Promise<voi
   out("\nProbe messages and reactions removed (use --keep to leave them)");
 }
 
-// T5
 async function probeWatch(ctx: ProcessContext, seconds: number): Promise<void> {
   const user = await (await openTd(ctx))("user");
   await describeChat(user);

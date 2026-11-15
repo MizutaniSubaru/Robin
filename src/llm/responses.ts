@@ -1,3 +1,5 @@
+// Provider for the OpenAI Responses protocol: translates Robin's LLM types to it and back
+
 import type {
   Response,
   ResponseCreateParamsNonStreaming,
@@ -24,7 +26,7 @@ export interface ResponsesOptions extends OpenAiClientOptions {
   reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
 }
 
-// OpenAI Responses. Stateless: nothing is stored server-side (store: false) and every request
+// Stateless: nothing is stored server-side (store: false) and every request
 // carries the whole run, as with the other providers. Reasoning items come back with their
 // encrypted content and are replayed unchanged within the run. Caching is OpenAI's implicit prefix
 // cache, so cache hints are not sent

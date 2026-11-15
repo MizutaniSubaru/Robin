@@ -1,3 +1,5 @@
+// Run trace: records every run, model call and tool call, read back by `bun run inspect`
+
 import { eq } from "drizzle-orm";
 
 import { type Db, schema } from "../db/index.ts";
@@ -5,7 +7,7 @@ import type { LlmError, LlmExchange, LlmRequest } from "../llm/index.ts";
 
 export type RunStatus = "completed" | "failed" | "aborted";
 
-// agent_runs / llm_calls / tool_calls: everything needed to see afterwards what a run saw and did
+// Written to agent_runs / llm_calls / tool_calls: enough to see afterwards what a run saw and did
 export interface Trace {
   startRun(run: { runId: string; chat: string; trigger: string; fromTs: number }): void;
   endRun(runId: string, status: RunStatus, toTs: number | null): void;

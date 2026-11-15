@@ -1,3 +1,5 @@
+// Converts text formatting (entities) between TDLib's form and Robin's TextEntity, both ways
+
 import type { TextEntity } from "../../core/events/index.ts";
 import type * as td from "../../tdlib-api/td-api.ts";
 import { parseUserKey, userKey } from "./keys.ts";

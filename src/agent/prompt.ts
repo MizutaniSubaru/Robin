@@ -1,3 +1,5 @@
+// The system prompt and the per-run trigger line
+
 import { attrs } from "../core/render/index.ts";
 import type { ChatType } from "../core/store/index.ts";
 

@@ -1,3 +1,5 @@
+// Provider for the Anthropic Messages protocol: translates Robin's LLM types to it and back
+
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   BetaContentBlock,
@@ -35,8 +37,8 @@ export interface MessagesOptions {
 
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
-// Anthropic Messages. Thinking is left to the model's default (adaptive on current models); its
-// blocks come back as opaque parts and are replayed unchanged within the run
+// Thinking is left to the model's default (adaptive on current models); its blocks come back as
+// opaque parts and are replayed unchanged within the run
 export function createMessagesProvider(options: MessagesOptions): LlmProvider {
   const client = new Anthropic({
     ...(options.apiKey ? { apiKey: options.apiKey } : {}),

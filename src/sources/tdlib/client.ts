@@ -1,3 +1,7 @@
+// Client: one TDLib instance, i.e. one client id on the hub. Sends requests, tracks the
+// authorization state and passes updates to its listeners. Once TDLib closes it, it is done for good;
+// the account creates a new one
+
 import type * as td from "../../tdlib-api/td-api.ts";
 import { TdClosedError, TdTimeoutError } from "./errors.ts";
 import type { SendOptions, TdHub } from "./hub.ts";
@@ -24,7 +28,6 @@ export interface TdClient {
 
 const CLOSE_TIMEOUT_MS = 15_000;
 
-// One TDLib instance. Lives until authorizationStateClosed; after that a new client is needed
 export function createTdClient(hub: TdHub): TdClient {
   const listeners = new Set<UpdateListener>();
   const authWaiters = new Set<() => void>();

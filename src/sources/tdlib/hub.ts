@@ -1,3 +1,7 @@
+// Hub: the one owner of libtdjson in the process. Runs the receive worker, matches TDLib's responses
+// to the requests that asked for them (by @extra) and hands updates to the right client
+// (by @client_id)
+
 import type { Logger } from "../../log/index.ts";
 import type * as td from "../../tdlib-api/td-api.ts";
 import { TdClosedError, TdError, TdTimeoutError } from "./errors.ts";
@@ -97,18 +101,13 @@ let lastGeneration = 0;
 // Released only once the hub's worker has left its loop
 let hubOpen = false;
 
-// One per process: owns libtdjson, the receive worker and request routing for every client.
-//
-// Threads: the worker only calls td_receive and posts raw strings; this thread parses them,
-// resolves requests by @extra and hands updates to clients by @client_id.
 // Recovery: a crashed worker is replaced once its thread is gone (TDLib keeps queuing meanwhile);
 // a worker stuck inside td_receive cannot be replaced safely, so that is reported through onFatal.
 // A client failing to handle an update is reported too, but receiving goes on, so the lifecycle can
 // still close every account in order.
 // Exit: TDLib aborts the process (SIGABRT from one of its threads while exit() runs static destructors)
 // when an instance is still open, so stop() closes leftovers while it can still receive their
-// authorizationStateClosed. Only a dead receive loop leaves them open.
-// At most one hub per process
+// authorizationStateClosed. Only a dead receive loop leaves them open
 export function createTdHub(options: TdHubOptions): TdHub {
   if (hubOpen) throw new Error("A TdHub is already open: td_receive must have a single owner per process");
   hubOpen = true;

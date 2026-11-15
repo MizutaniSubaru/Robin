@@ -1,3 +1,6 @@
+// Account: one logged-in Telegram account (user or bot). Wraps the current TDLib client, logs it in,
+// and replaces the client when TDLib closes it, so update listeners and callers survive restarts
+
 import type { Logger } from "../../log/index.ts";
 import type * as td from "../../tdlib-api/td-api.ts";
 import { AuthorizationRequiredError, authorize, type Credentials } from "./auth.ts";
@@ -40,8 +43,6 @@ export interface TdAccount {
 const RESTART_BASE_MS = 1_000;
 const RESTART_MAX_MS = 5 * 60_000;
 
-// A logged-in Telegram account. Owns the current client and replaces it if TDLib closes it,
-// so update listeners and callers survive client restarts
 export function createTdAccount(hub: TdHub, options: AccountOptions, log: Logger): TdAccount {
   const { name } = options;
   const listeners = new Set<UpdateListener>();

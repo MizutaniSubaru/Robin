@@ -1,3 +1,6 @@
+// Inbound queues: where sources hand their items over to the store. Each chat has its own queue, so
+// events are committed in the order they arrived
+
 import type { Logger } from "../../log/index.ts";
 import type { EventStore } from "./event-store.ts";
 import type { InboundEvent, InboundItem, InboundProfile } from "./types.ts";
@@ -31,9 +34,9 @@ interface Entry {
   ready: Queued | undefined;
 }
 
-// Per-chat ordered queues in front of the store. Only the head of a chat's queue commits, and only
-// once its transform is done, so every chat's events are committed (and get their ts) in the order
-// they arrived, while slow transforms in one chat never hold up another
+// Only the head of a chat's queue commits, and only once its transform is done, so every chat's
+// events are committed (and get their ts) in arrival order, while a slow transform in one chat never
+// holds up another
 export function createInbound(store: EventStore, log: Logger, options: InboundOptions): Inbound {
   const transform = options.transform ?? ((item: InboundEvent) => Promise.resolve(item));
   const giveUpAfterMs = options.giveUpAfterMs ?? 120_000;

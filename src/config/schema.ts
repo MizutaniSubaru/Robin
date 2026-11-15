@@ -1,3 +1,5 @@
+// Config schema: the shape and defaults of config.toml
+
 import { z } from "zod";
 
 export const LogLevel = z.enum(["trace", "debug", "info", "warning", "error", "fatal"]);

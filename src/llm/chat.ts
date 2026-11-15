@@ -1,3 +1,5 @@
+// Provider for the OpenAI Chat Completions protocol: translates Robin's LLM types to it and back
+
 import type {
   ChatCompletion,
   ChatCompletionContentPart,
@@ -25,8 +27,8 @@ export interface ChatOptions extends OpenAiClientOptions {
   reasoningEffort: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined;
 }
 
-// OpenAI Chat Completions, which many other services speak too. Caching is automatic on the
-// provider's side (prefix based), so cache hints are not sent
+// Many services besides OpenAI speak this protocol. Caching is automatic on the provider's side
+// (prefix based), so cache hints are not sent
 export function createChatProvider(options: ChatOptions): LlmProvider {
   const client = createOpenAiClient(options);
 

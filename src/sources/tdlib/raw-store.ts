@@ -1,3 +1,6 @@
+// Raw update writer: stores every kept TDLib update, unchanged, in raw_updates. That table is the
+// record the adapter can be replayed over
+
 import type { Db } from "../../db/index.ts";
 import { schema } from "../../db/index.ts";
 import type { Logger } from "../../log/index.ts";
@@ -18,17 +21,15 @@ export interface RawUpdateWriterOptions {
 }
 
 export interface RawUpdateWriter {
-  // Throws after close or when the buffer is full
   push(account: string, update: td.Update, receivedAt: number): void;
-  // Last write at shutdown, without retries; throws if rows remain unstored
   close(): void;
   readonly buffered: number;
 }
 
-// Rows per INSERT, well under SQLite's bound-parameter limit
+// Rows per INSERT
 const CHUNK = 500;
 
-// Buffers raw TDLib updates and writes each burst (one worker batch) in a single transaction.
+// Buffers the updates and writes each burst (one worker batch) in a single transaction.
 // Rows leave the buffer only once committed, so a failed write keeps them in arrival order and the
 // whole buffer is retried with backoff: a disk-full or locked database must not lose good data
 export function createRawUpdateWriter(db: Db, options: RawUpdateWriterOptions): RawUpdateWriter {

@@ -1,3 +1,6 @@
+// Agent: decides when to answer a chat and runs the model on it. startAgent connects the scheduler
+// to runChat
+
 import type { EventStore, Projection } from "../core/store/index.ts";
 import type { Db } from "../db/index.ts";
 import type { LlmProvider } from "../llm/index.ts";
@@ -33,7 +36,6 @@ export interface AgentSetup {
   log: Logger;
 }
 
-// Listens for triggering events and runs the model on them
 export function startAgent(setup: AgentSetup): Scheduler {
   const deps = {
     store: setup.store,

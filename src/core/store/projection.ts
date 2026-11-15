@@ -1,3 +1,6 @@
+// Projection: loads a chat's current ChatState, i.e. the latest stored snapshot plus the events
+// committed after it, folded with reduce(). Writes snapshots back so later loads fold less
+
 import { eq } from "drizzle-orm";
 
 import { type Db, schema } from "../../db/index.ts";

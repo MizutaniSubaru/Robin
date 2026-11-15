@@ -1,3 +1,6 @@
+// Self-sender (Pipeline B): how Robin sends a message. It records the message in the event log
+// first, then hands it to the platform, and records every later change of its state
+
 import type { TextEntity } from "../core/events/index.ts";
 import type { EventStore } from "../core/store/index.ts";
 import type { Logger } from "../log/index.ts";
@@ -35,8 +38,7 @@ export interface SelfSender {
   recover(): void;
 }
 
-// Pipeline B: Robin's own messages enter the log before the platform hears of them, and every change
-// of their state is one more event. A crash at any point leaves at worst a pending message, which
+// A crash at any point leaves at worst a pending message, which
 // recover() turns into "maybe sent"; never a sent message the log does not know about
 export function createSelfSender(
   store: EventStore,

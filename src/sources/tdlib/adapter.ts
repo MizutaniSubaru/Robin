@@ -1,3 +1,14 @@
+// Adapter: turns the TDLib updates of both accounts into Robin's inbound items (events, user
+// profiles, chat metadata) for the store.
+//
+// Served: supergroups through the user account, private chats through the bot. Basic groups (their
+// message ids differ per account) and everything else are skipped; raw_updates still keeps them.
+// Messages Robin sent itself are skipped too: Pipeline B already recorded them.
+//
+// Its input is exactly what raw_updates stores, and it remembers only what those updates taught it
+// (chat kinds and titles, user names, an edit's new content), so replaying raw_updates rebuilds the
+// same events
+
 import type { Content, ContentPart, ReplyRef } from "../../core/events/index.ts";
 import type { ChatType, InboundEvent, InboundItem, SourceBody } from "../../core/store/index.ts";
 import type * as td from "../../tdlib-api/td-api.ts";
@@ -6,15 +17,6 @@ import { fromTdEntities } from "./entities.ts";
 import { botPrivateChatKey, chatSenderKey, groupChatKey, parseUserKey, userKey } from "./keys.ts";
 import { toServerMessageId } from "./message-id.ts";
 
-// Turns the TDLib updates of both accounts into Robin's inbound items.
-//
-// It is fed exactly what raw_updates stores (the update filter's output), and its only memory is what
-// those updates taught it (chat kinds and titles, user names, an edit's new content), so running it
-// over raw_updates again rebuilds the same events.
-//
-// Served: supergroups through the user account, private chats through the bot. Basic groups (their
-// message ids differ per account) and everything else are left out; raw_updates keeps them for later.
-// Messages Robin sent itself never come in here: they are Pipeline B's
 export interface TelegramAdapter {
   adapt(account: AccountName, update: td.Update, receivedAt: number): InboundItem[];
 }
@@ -53,14 +55,12 @@ export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAd
 
   function userName(userId: number): string {
     const name = users.get(userId);
-    // TDLib sends updateUser before a user id appears anywhere else
     if (name === undefined) throw new Error(`User ${userId} appeared before its updateUser`);
     return name;
   }
 
   function chatEntry(account: AccountName, chatId: number): ChatEntry {
     const entry = accounts[account].chats.get(chatId);
-    // TDLib sends updateNewChat before a chat id appears anywhere else
     if (!entry) throw new Error(`Chat ${chatId} appeared before its updateNewChat (${account})`);
     return entry;
   }

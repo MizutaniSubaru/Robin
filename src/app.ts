@@ -1,3 +1,6 @@
+// App: builds and connects everything the long-running bot needs (database, event store, TDLib
+// accounts, ingest, sender, agent) and registers each part's cleanup
+
 import { createSelfSender, startAgent } from "./agent/index.ts";
 import { loadTelegramEnv, type TelegramEnv } from "./config/index.ts";
 import { createEventStore, createInbound, createProjection } from "./core/store/index.ts";
@@ -21,9 +24,6 @@ import {
   userKey,
 } from "./sources/tdlib/index.ts";
 
-// Every resource registers its cleanup on lc as soon as it exists, so shutdown runs in reverse:
-// the agent stops, accounts close (their last updates are still stored and committed), the receive
-// worker stops, buffered raw rows flush, queued inbound events commit, then the db closes
 export async function createApp(
   { config, paths, lc, fatal }: ProcessContext,
   env: TelegramEnv = loadTelegramEnv(),

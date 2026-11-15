@@ -1,3 +1,6 @@
+// Sender: sends Robin's messages to Telegram through the bot account and waits until Telegram
+// confirms or rejects them. app.ts gives it to the agent as its Outbound
+
 import type { TextEntity } from "../../core/events/index.ts";
 import type * as td from "../../tdlib-api/td-api.ts";
 import type { TdAccount } from "./account.ts";
@@ -34,7 +37,6 @@ export interface TelegramSender {
   reconcile(chat: string, tempId: string): Promise<SendOutcome>;
 }
 
-// Everything Robin says goes out through the bot account
 export function createTelegramSender(bot: TdAccount, tracker: SendTracker): TelegramSender {
   async function confirmed(chatId: number, tempId: number, signal?: AbortSignal): Promise<SendOutcome> {
     const waiting = tracker.wait(chatId, tempId);

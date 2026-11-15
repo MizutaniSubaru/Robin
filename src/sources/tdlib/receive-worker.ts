@@ -1,4 +1,5 @@
-// Worker entry: owns td_receive. Started and supervised by the hub
+// Receive worker: the thread that owns td_receive. Loads libtdjson, runs the receive loop and posts
+// what it receives to the hub, which starts and supervises it
 import { dlopen, FFIType } from "bun:ffi";
 
 import { readCString } from "./ffi.ts";

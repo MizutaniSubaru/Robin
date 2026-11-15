@@ -1,3 +1,6 @@
+// Process shell shared by main and every CLI command: loads config, sets up logging, handles signals
+// and fatal errors, and sets the exit code
+
 import { type Config, loadConfig, type Paths, resolvePaths } from "./config/index.ts";
 import { createLifecycle, type Lifecycle } from "./lifecycle.ts";
 import { getLogger, type Logger, setupLogging, shutdownLogging } from "./log/index.ts";
@@ -17,7 +20,6 @@ export interface ProcessOptions {
   keepAlive?: boolean;
 }
 
-// Process shell shared by main and every CLI command: config, logging, signals, fatal errors, exit code.
 // Logging belongs to the process, so it shuts down last, after lc has cleaned up
 export async function runProcess(
   name: string,

@@ -1,3 +1,5 @@
+// Tools the model can call: send_message and end_turn
+
 import { z } from "zod";
 
 import { parseMarkdown } from "../core/markdown/index.ts";

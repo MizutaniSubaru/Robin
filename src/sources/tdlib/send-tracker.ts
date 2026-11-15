@@ -1,3 +1,7 @@
+// Send tracker: sendMessage returns a temporary message at once, and TDLib reports the real outcome
+// later (updateMessageSendSucceeded / updateMessageSendFailed). This matches those updates to the
+// temporary id, so a sender can await the final result
+
 import type * as td from "../../tdlib-api/td-api.ts";
 import type { UpdateListener } from "./client.ts";
 import { TdError } from "./errors.ts";
@@ -23,7 +27,6 @@ const MAX_UNCLAIMED = 1_000;
 // TDLib message ids, temporary ones included, are unique only within a chat
 const sendKey = (chatId: number, tempId: number) => `${chatId}:${tempId}`;
 
-// Matches updateMessageSendSucceeded / updateMessageSendFailed to the temporary id sendMessage returned
 export function createSendTracker(onUpdate: (listener: UpdateListener) => () => void): SendTracker {
   const waiters = new Map<string, Waiter>();
   const unclaimed = new Map<string, Outcome>();

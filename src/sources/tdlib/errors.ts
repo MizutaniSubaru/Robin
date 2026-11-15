@@ -1,3 +1,5 @@
+// Errors of TDLib requests
+
 // TDLib answered a request with an `error` object
 export class TdError extends Error {
   override readonly name = "TdError";

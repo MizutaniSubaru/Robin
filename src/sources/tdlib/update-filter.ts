@@ -1,23 +1,23 @@
+// Update filter: decides which TDLib updates Robin keeps (stored in raw_updates, then adapted into
+// events). Everything else is dropped.
+//
+// Kept: what the adapter needs to build events, i.e. messages, edits, deletions, reactions,
+// membership, chat and user names and send results. Dropped: typing and presence, read state,
+// unread counters, chat list order, notifications, files, options, stickers, themes, calls, stories,
+// payments, and bot features Robin does not use.
+//
+// Groups come from the user account; there the bot keeps only what the user cannot see (its own
+// send results, bot-only reaction and member updates). The bot also keeps its private chats
+
 import type * as td from "../../tdlib-api/td-api.ts";
 import type { AccountName } from "./account.ts";
 
-// Decides which TDLib updates are worth persisting in raw_updates.
-// Kept: whatever the adapter needs to rebuild events (messages, edits, deletions, reactions,
-// membership, chat and user names, send results), and nothing it does not: the adapter is fed this
-// filter's output, so running it again over raw_updates rebuilds the same events. Everything else is dropped: typing and presence,
-// read state, unread counters, chat list order, notifications, files, options, stickers, themes,
-// calls, stories, payments, and bot features Robin does not use.
-//
-// The bot runs with privacy mode off, so in groups it sees the same messages as the user account.
-// The user account is the source for groups; the bot stores there only what the user cannot see
-// (its own send results, bot-only reaction and member updates), plus its private chats
 export interface UpdateFilter {
   keep(update: td.Update): boolean;
 }
 
 type ChatKind = "private" | "group" | "channel" | "secret";
 
-// What the bot keeps in groups: the user account never receives these
 const BOT_GROUP_UPDATES = new Set<td.Update["@type"]>([
   "updateMessageSendSucceeded",
   "updateMessageSendFailed",
@@ -26,8 +26,6 @@ const BOT_GROUP_UPDATES = new Set<td.Update["@type"]>([
   "updateChatMember",
 ]);
 
-// One per account: chat kinds come from that account's updateNewChat,
-// which TDLib guarantees before any other update about the chat
 export function createUpdateFilter(account: AccountName): UpdateFilter {
   const isBot = account === "bot";
   const chatKinds = new Map<number, ChatKind>();
@@ -52,7 +50,6 @@ export function createUpdateFilter(account: AccountName): UpdateFilter {
   }
 
   function keepUser(user: td.user): boolean {
-    // usernames is null when the user has none
     const name = JSON.stringify([user.first_name, user.last_name, user.usernames?.active_usernames ?? []]);
     if (userNames.get(user.id) === name) return false;
     userNames.set(user.id, name);
