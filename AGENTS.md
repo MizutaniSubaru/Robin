@@ -72,7 +72,7 @@ Failures no caller can await (receive loop dead, storage down for good, account 
 
 ### Accounts
 
-The user account owns ingress for groups. The bot sends, runs with privacy mode off, and stores in groups only what the user cannot see (`update-filter.ts`). A send returns only after TDLib's `updateMessageSendSucceeded` / `updateMessageSendFailed`.
+The user account owns ingress for groups. The bot sends, runs with privacy mode off, and stores in groups only what the user cannot see (`update-filter.ts`). Both accounts store every non-secret chat's `updateNewChat` and title: the adapter knows chats per account, so a kept update needs its chat introduced in the same account's `raw_updates`. A send returns only after TDLib's `updateMessageSendSucceeded` / `updateMessageSendFailed`.
 
 ### Adapter
 

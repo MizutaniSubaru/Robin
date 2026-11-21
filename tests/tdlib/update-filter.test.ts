@@ -88,12 +88,11 @@ describe("createUpdateFilter", () => {
 
   test("bot keeps in groups only what the user account cannot see", () => {
     const filter = createUpdateFilter("bot");
-    expect(filter.keep(newChat(-1001, supergroup(false)))).toBe(false);
+    filter.keep(newChat(-1001, supergroup(false)));
     expect(filter.keep(newMessage(-1001))).toBe(false);
     expect(filter.keep(update({ "@type": "updateMessageEdited", chat_id: -1001, message_id: 1 }))).toBe(
       false,
     );
-    expect(filter.keep(update({ "@type": "updateChatTitle", chat_id: -1001, title: "x" }))).toBe(false);
     expect(
       filter.keep(
         update({
@@ -120,6 +119,24 @@ describe("createUpdateFilter", () => {
       true,
     );
     expect(filter.keep(update({ "@type": "updateChatMember", chat_id: -1001 }))).toBe(true);
+  });
+
+  // Regression: the bot dropped the updateNewChat of groups and channels, yet kept updates for them
+  // (send results, forwards from a channel into a private chat), so raw_updates could not say what
+  // those chats were
+  test("both accounts keep the introduction and name of every chat but secret ones", () => {
+    for (const account of ["user", "bot"] as const) {
+      const filter = createUpdateFilter(account);
+      expect(filter.keep(newChat(-1001, supergroup(false)))).toBe(true);
+      expect(filter.keep(newChat(-1002, supergroup(true)))).toBe(true);
+      expect(filter.keep(newChat(-3, basicGroup))).toBe(true);
+      expect(filter.keep(newChat(4, privateChat))).toBe(true);
+      expect(filter.keep(newChat(5, secretChat))).toBe(false);
+      for (const chatId of [-1001, -1002, -3, 4]) {
+        expect(filter.keep(update({ "@type": "updateChatTitle", chat_id: chatId, title: "x" }))).toBe(true);
+      }
+      expect(filter.keep(update({ "@type": "updateChatTitle", chat_id: 5, title: "x" }))).toBe(false);
+    }
   });
 
   test("bot keeps its private chats", () => {

@@ -6,6 +6,10 @@
 // unread counters, chat list order, notifications, files, options, stickers, themes, calls, stories,
 // payments, and bot features Robin does not use.
 //
+// Both accounts keep every non-secret chat's updateNewChat and updateChatTitle: the adapter knows
+// chats per account, and an update it keeps for a chat must be preceded by that chat's introduction
+// in the same account's raw_updates, or a replay cannot tell what the chat is.
+//
 // Groups come from the user account; there the bot keeps only what the user cannot see (its own
 // send results, bot-only reaction and member updates). The bot also keeps its private chats
 
@@ -36,8 +40,9 @@ export function createUpdateFilter(account: AccountName): UpdateFilter {
     const kind = chatKinds.get(chatId);
     if (kind === undefined) throw new Error(`${type} for chat ${chatId} arrived before its updateNewChat`);
     if (kind === "secret") return false;
-    // A channel's name is needed for messages it sends or forwards into groups; nothing else of it is
-    if (kind === "channel") return !isBot && type === "updateChatTitle";
+    // A chat's name is needed wherever it sends or forwards a message, in any chat of either account
+    if (type === "updateChatTitle") return true;
+    if (kind === "channel") return false;
     if (isBot && kind === "group") return BOT_GROUP_UPDATES.has(type);
     return true;
   }
@@ -45,7 +50,6 @@ export function createUpdateFilter(account: AccountName): UpdateFilter {
   function keepNewChat(chat: td.chat): boolean {
     const kind = chatKind(chat.type);
     chatKinds.set(chat.id, kind);
-    if (isBot) return kind === "private";
     return kind !== "secret";
   }
 
