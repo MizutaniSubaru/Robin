@@ -57,6 +57,11 @@ export function createTelegramSender(bot: TdAccount, tracker: SendTracker): Tele
       const chatId = chatIdOf(chat);
       let pending: td.message;
       try {
+        // The bot learns of a chat only from its updates, so a quiet group is one TDLib does not know
+        // and sendMessage fails with "Chat not found". getChat loads it from the server for a bot. It
+        // runs before every send, not once per chat: a known chat answers from memory, and a cache
+        // here would outlive the client after TDLib restarts it
+        await bot.invoke({ "@type": "getChat", chat_id: chatId });
         pending = await bot.invoke({
           "@type": "sendMessage",
           chat_id: chatId,
