@@ -327,10 +327,76 @@ describe("createTelegramAdapter", () => {
     ]);
   });
 
-  test("fails loudly on a user or chat TDLib never introduced", () => {
+  // Regression: a user or chat TDLib had not introduced made the adapter throw, so the whole message
+  // was lost (a deleted account, an old forward, a mention of someone never seen)
+  test('a user TDLib never introduced is named "" until their updateUser corrects it', () => {
     const a = createTelegramAdapter({ botUserId: BOT });
-    expect(() => a.adapt("user", message({ chat_id: GROUP, id: 1 << 20 }), T)).toThrow(/updateNewChat/);
     a.adapt("user", newChat(GROUP, supergroup), T);
-    expect(() => a.adapt("user", message({ chat_id: GROUP, id: 1 << 20 }), T)).toThrow(/updateUser/);
+    const mention: td.textEntity = {
+      "@type": "textEntity",
+      offset: 0,
+      length: 3,
+      type: { "@type": "textEntityTypeMentionName", user_id: 8 },
+    };
+    expect(
+      a.adapt(
+        "user",
+        message({
+          chat_id: GROUP,
+          id: 1 << 20,
+          content: { "@type": "messageText", text: formatted("Bob hi", [mention]) },
+          forward_info: {
+            "@type": "messageForwardInfo",
+            origin: { "@type": "messageOriginUser", sender_user_id: 9 },
+          },
+        }),
+        T,
+      ),
+    ).toMatchObject([
+      {
+        users: { "tg:user:7": "", "tg:user:8": "" },
+        body: { kind: "message.created", sender: "tg:user:7", senderName: "", forwardedFrom: "" },
+      },
+    ]);
+    expect(a.adapt("user", user(7, "Alice"), T + 1)).toEqual([
+      { type: "profile", user: "tg:user:7", name: "Alice", receivedAt: T + 1 },
+    ]);
+  });
+
+  test("a chat TDLib never introduced is not served, and a chat sender or origin from it has no name", () => {
+    const a = adapter();
+    expect(a.adapt("user", message({ chat_id: GROUP, id: 1 << 20 }), T)).toEqual([]);
+    expect(a.adapt("user", update({ "@type": "updateChatTitle", chat_id: GROUP, title: "Lab" }), T)).toEqual(
+      [],
+    );
+    expect(
+      a.adapt(
+        "user",
+        update({
+          "@type": "updateDeleteMessages",
+          chat_id: GROUP,
+          message_ids: [1 << 20],
+          is_permanent: true,
+        }),
+        T,
+      ),
+    ).toEqual([]);
+
+    a.adapt("user", newChat(GROUP, supergroup), T);
+    expect(
+      a.adapt(
+        "user",
+        message({
+          chat_id: GROUP,
+          id: 2 << 20,
+          sender_id: { "@type": "messageSenderChat", chat_id: -1009 },
+          forward_info: {
+            "@type": "messageForwardInfo",
+            origin: { "@type": "messageOriginChannel", chat_id: -1008, author_signature: "Ann" },
+          },
+        }),
+        T,
+      ),
+    ).toMatchObject([{ body: { sender: "tg:chat:-1009", senderName: "", forwardedFrom: "Ann" } }]);
   });
 });

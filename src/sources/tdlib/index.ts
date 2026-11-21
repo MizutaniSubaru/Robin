@@ -24,6 +24,7 @@ export { createIngest, type IngestDeps } from "./ingest.ts";
 export { botPrivateChatKey, botUserIdFromToken, chatIdOf, groupChatKey, userKey } from "./keys.ts";
 export { toServerMessageId, toTdMessageId } from "./message-id.ts";
 export { createTelegramSender, type SendOutcome, type TelegramSender } from "./outbound.ts";
+export { preloadChats } from "./preload.ts";
 export { createRawUpdateWriter, type RawUpdateWriter } from "./raw-store.ts";
 export { createSendTracker, type SendTracker } from "./send-tracker.ts";
 export { createUpdateFilter, type UpdateFilter } from "./update-filter.ts";

@@ -18,6 +18,7 @@ import {
   createTelegramAdapter,
   createTelegramSender,
   createUpdateFilter,
+  preloadChats,
   type SendTracker,
   startTdHub,
   type TdAccount,
@@ -46,7 +47,10 @@ export async function createApp(
   lc.defer("raw updates", () => rawUpdates.close());
 
   const hub = startTdHub(config, paths, lc, fatal);
-  const adapter = createTelegramAdapter({ botUserId: botUserIdFromToken(env.botToken) });
+  const adapter = createTelegramAdapter({
+    botUserId: botUserIdFromToken(env.botToken),
+    log: getLogger("tdlib", "adapter"),
+  });
 
   const ingestLog = getLogger("ingest");
 
@@ -64,6 +68,8 @@ export async function createApp(
     return account;
   };
   const user = await openAccount("user");
+  // Before the bot and the agent: the chats it introduces are known by the time messages need them
+  await preloadChats(user, getLogger("tdlib", "user"));
   let tracker: SendTracker | undefined;
   const bot = await openAccount("bot", (account) => {
     // Before start: TDLib reports sends it finishes from before a restart right away

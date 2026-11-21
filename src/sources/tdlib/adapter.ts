@@ -11,6 +11,7 @@
 
 import type { Content, ContentPart, ReplyRef } from "../../core/events/index.ts";
 import type { ChatType, InboundEvent, InboundItem, SourceBody } from "../../core/store/index.ts";
+import { getLogger, type Logger } from "../../log/index.ts";
 import type * as td from "../../tdlib-api/td-api.ts";
 import type { AccountName } from "./account.ts";
 import { fromTdEntities } from "./entities.ts";
@@ -24,6 +25,7 @@ export interface TelegramAdapter {
 export interface AdapterOptions {
   // Messages from the bot are Robin's own; the user account sees them as anyone else's
   botUserId: number;
+  log?: Logger;
 }
 
 type ChatKind = "private" | "basic_group" | "supergroup" | "channel" | "secret";
@@ -45,29 +47,49 @@ interface AccountDirectory {
 // entries that never get one
 const PENDING_CONTENT_LIMIT = 1000;
 
-export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAdapter {
+export function createTelegramAdapter({
+  botUserId,
+  log = getLogger("tdlib", "adapter"),
+}: AdapterOptions): TelegramAdapter {
   // User ids and names are the same for both accounts
   const users = new Map<number, string>();
   const accounts: Record<AccountName, AccountDirectory> = {
     user: { chats: new Map(), editedContent: new Map() },
     bot: { chats: new Map(), editedContent: new Map() },
   };
+  // Unknown chats already warned about, as `${account}:${chatId}`
+  const unknownChats = new Set<string>();
 
+  // TDLib introduces every user and chat before using them, but should it ever not (a deleted
+  // account, an old forward, a chat not loaded yet) Robin must neither lose the message nor stop.
+  // An unknown user is named "", as TDLib names deleted accounts, and that name is remembered, so the
+  // user's updateUser, whenever it comes, corrects it through a profile update. Same input, same
+  // output: a replay of raw_updates still rebuilds the same events
   function userName(userId: number): string {
     const name = users.get(userId);
-    if (name === undefined) throw new Error(`User ${userId} appeared before its updateUser`);
-    return name;
+    if (name !== undefined) return name;
+    log.warn('User {userId} appeared before its updateUser; named "" until it comes', { userId });
+    users.set(userId, "");
+    return "";
   }
 
-  function chatEntry(account: AccountName, chatId: number): ChatEntry {
+  // undefined for a chat TDLib never introduced to this account: it is not served, and its title is ""
+  function chatEntry(account: AccountName, chatId: number): ChatEntry | undefined {
     const entry = accounts[account].chats.get(chatId);
-    if (!entry) throw new Error(`Chat ${chatId} appeared before its updateNewChat (${account})`);
+    if (!entry && !unknownChats.has(`${account}:${chatId}`)) {
+      unknownChats.add(`${account}:${chatId}`);
+      log.warn("Chat {chatId} appeared before its updateNewChat ({account})", { chatId, account });
+    }
     return entry;
+  }
+
+  function chatTitle(account: AccountName, chatId: number): string {
+    return chatEntry(account, chatId)?.title ?? "";
   }
 
   // The chat key when this account serves the chat, undefined otherwise
   function served(account: AccountName, chatId: number): string | undefined {
-    const { kind } = chatEntry(account, chatId);
+    const kind = chatEntry(account, chatId)?.kind;
     if (account === "user" && kind === "supergroup") return groupChatKey(chatId);
     if (account === "bot" && kind === "private") return botPrivateChatKey(chatId);
     return undefined;
@@ -75,10 +97,10 @@ export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAd
 
   function chatInfo(account: AccountName, chatId: number): InboundItem[] {
     const key = served(account, chatId);
-    if (key === undefined) return [];
-    const { kind, title } = chatEntry(account, chatId);
-    const chatType: ChatType = kind === "private" ? "private" : "supergroup";
-    return [{ type: "chat", chat: key, chatType, title, inboundAccount: account }];
+    const entry = accounts[account].chats.get(chatId);
+    if (key === undefined || !entry) return [];
+    const chatType: ChatType = entry.kind === "private" ? "private" : "supergroup";
+    return [{ type: "chat", chat: key, chatType, title: entry.title, inboundAccount: account }];
   }
 
   function content(value: td.MessageContent, names: Record<string, string>): Content | undefined {
@@ -100,7 +122,7 @@ export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAd
         if (id.user_id === botUserId) return undefined;
         return { key: userKey(id.user_id), name: userName(id.user_id) };
       case "messageSenderChat":
-        return { key: chatSenderKey(id.chat_id), name: chatEntry(account, id.chat_id).title };
+        return { key: chatSenderKey(id.chat_id), name: chatTitle(account, id.chat_id) };
     }
   }
 
@@ -113,9 +135,9 @@ export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAd
       case "messageOriginHiddenUser":
         return origin.sender_name;
       case "messageOriginChat":
-        return withSignature(chatEntry(account, origin.sender_chat_id).title, origin.author_signature);
+        return withSignature(chatTitle(account, origin.sender_chat_id), origin.author_signature);
       case "messageOriginChannel":
-        return withSignature(chatEntry(account, origin.chat_id).title, origin.author_signature);
+        return withSignature(chatTitle(account, origin.chat_id), origin.author_signature);
     }
   }
 
@@ -191,6 +213,7 @@ export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAd
     adapt(account, update, receivedAt) {
       switch (update["@type"]) {
         case "updateNewChat": {
+          unknownChats.delete(`${account}:${update.chat.id}`);
           accounts[account].chats.set(update.chat.id, {
             kind: chatKind(update.chat.type),
             title: update.chat.title,
@@ -199,6 +222,7 @@ export function createTelegramAdapter({ botUserId }: AdapterOptions): TelegramAd
         }
         case "updateChatTitle": {
           const entry = chatEntry(account, update.chat_id);
+          if (!entry) return [];
           entry.title = update.title;
           return chatInfo(account, update.chat_id);
         }
@@ -318,7 +342,9 @@ function displayName(user: td.user): string {
 }
 
 function withSignature(title: string, signature: string): string {
-  return signature ? `${title} (${signature})` : title;
+  if (!signature) return title;
+  // An unknown chat has no title
+  return title ? `${title} (${signature})` : signature;
 }
 
 function chatKind(type: td.ChatType): ChatKind {

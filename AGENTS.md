@@ -56,7 +56,7 @@ TDLib-specific concerns (raw update storage, the adapter, chat keys, sending) be
 
 Every resource registers its cleanup on the `Lifecycle` right after it is acquired; `stop()` undoes them in reverse, so a half-finished startup is undone exactly as far as it got.
 
-Startup order in `app.ts`: open db and migrate -> event store and inbound queues -> raw update writer -> TDLib hub -> accounts (user, then bot; each subscribes before `start()`, the bot's send tracker included) -> recover pending sends -> agent (only with `agent.provider` set). Shutdown is the reverse: runs are aborted and awaited without a time limit (everything a run waits on ends with the abort or its own timeout), accounts close (their last updates are still stored and adapted), the receive worker stops, buffered raw rows flush, queued inbound events commit, the db closes. Logging belongs to the process and shuts down last.
+Startup order in `app.ts`: open db and migrate -> event store and inbound queues -> raw update writer -> TDLib hub -> accounts (user, then preload its main chat list, then bot; each subscribes before `start()`, the bot's send tracker included) -> recover pending sends -> agent (only with `agent.provider` set). Shutdown is the reverse: runs are aborted and awaited without a time limit (everything a run waits on ends with the abort or its own timeout), accounts close (their last updates are still stored and adapted), the receive worker stops, buffered raw rows flush, queued inbound events commit, the db closes. Logging belongs to the process and shuts down last.
 
 Failures no caller can await (receive loop dead, storage down for good, account gone) go through `ProcessContext.fatal`: log, run the lifecycle, exit 1. Never simulate this with uncaught exceptions or timers.
 
@@ -76,7 +76,7 @@ The user account owns ingress for groups. The bot sends, runs with privacy mode 
 
 ### Adapter
 
-The adapter is fed exactly what the update filter keeps, which is exactly what `raw_updates` stores, and remembers only what those updates taught it (chat kinds and titles, user names, an edit's pending content). Running it over `raw_updates` again rebuilds the same events, so anything it needs must pass the filter. Served: supergroups through the user account, private chats through the bot. TDLib introduces every user and chat before using it; an unknown one is a bug and throws. The ingest is an isolation boundary: an update the adapter throws on is already headed for `raw_updates`, so it is logged and skipped and a replay recovers it. Storing and committing stay fatal.
+The adapter is fed exactly what the update filter keeps, which is exactly what `raw_updates` stores, and remembers only what those updates taught it (chat kinds and titles, user names, an edit's pending content). Running it over `raw_updates` again rebuilds the same events, so anything it needs must pass the filter. Served: supergroups through the user account, private chats through the bot. An update for a chat TDLib has not introduced yet is still kept by the filter and skipped by the adapter (or titled `""` when referenced as a sender or forward origin); an unknown user is named `""` until their `updateUser` arrives and corrects it through a profile update. The ingest is an isolation boundary for both the filter and the adapter: a filter error is logged and the update is kept; an adapter error is logged and the update is skipped (already headed for `raw_updates`, so a replay recovers it). Storing and committing stay fatal.
 
 ### Events and Timestamps
 

@@ -66,9 +66,11 @@ describe("createUpdateFilter", () => {
     expect(filter.keep(update({ "@type": "updateMessageEdited", chat_id: -1001, message_id: 1 }))).toBe(true);
   });
 
-  test("throws on an update for a chat whose updateNewChat it has not seen", () => {
-    expect(() => createUpdateFilter("user").keep(newMessage(-1009))).toThrow(/before its updateNewChat/);
-    expect(() => createUpdateFilter("bot").keep(newMessage(9))).toThrow(/before its updateNewChat/);
+  // Regression: the filter threw on such an update outside the ingest's isolation boundary, so a single
+  // update TDLib sent too early stopped the whole process
+  test("keeps an update for a chat whose updateNewChat it has not seen, without throwing", () => {
+    expect(createUpdateFilter("user").keep(newMessage(-1009))).toBe(true);
+    expect(createUpdateFilter("bot").keep(newMessage(9))).toBe(true);
   });
 
   test("keeps only permanent deletions", () => {

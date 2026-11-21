@@ -38,7 +38,9 @@ export function createUpdateFilter(account: AccountName): UpdateFilter {
 
   function keepChatUpdate(type: td.Update["@type"], chatId: number): boolean {
     const kind = chatKinds.get(chatId);
-    if (kind === undefined) throw new Error(`${type} for chat ${chatId} arrived before its updateNewChat`);
+    // TDLib introduces a chat before using it. Should it ever not, the update is kept rather than
+    // thrown on: raw_updates keeps the record, and the adapter skips what it cannot place
+    if (kind === undefined) return true;
     if (kind === "secret") return false;
     // A chat's name is needed wherever it sends or forwards a message, in any chat of either account
     if (type === "updateChatTitle") return true;
