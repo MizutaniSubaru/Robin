@@ -6,7 +6,7 @@ Rules for anyone (human or agent) changing Robin. Keep this file short: it recor
 
 ## System Overview
 
-Robin is a Telegram bot built on an append-only event log. Two TDLib accounts feed it: a user account that sees groups as a member does, and the bot account that sends. Raw TDLib updates are stored first; the adapter turns them into Robin events, which the store commits in order; a pure core folds the log into per-chat state and renders it for the agent, which talks to an LLM through a provider-neutral representation and speaks only through tools.
+Robin is a Telegram bot built on an append-only event log. Two TDLib accounts feed it: a user account that sees groups as a member does, and the bot account that sends. The adapter turns TDLib updates directly into Robin events, which the store commits in order; a pure core folds the log into per-chat state and renders it for the agent, which talks to an LLM through a provider-neutral representation and speaks only through tools.
 
 ## Technology
 
@@ -24,9 +24,9 @@ Bun (runtime, tests, FFI, workers), TypeScript, Biome, SQLite via `bun:sqlite` +
 src/
 ├── tdlib-api/    Generated TDLib types (td-api.ts from td_api.tl). Neutral: anyone may import
 ├── sources/      Inputs from the outside world
-│   └── tdlib/    FFI, hub (with its receive worker), clients, accounts, auth, raw update filter and
-│                 storage, the ingest (filter -> raw_updates -> adapter), the adapter (updates -> Robin
-│                 events), keys, the sender (Robin's messages out)
+│   └── tdlib/    FFI, hub (with its receive worker), clients, accounts, auth, chat preloading,
+│                 the ingest (adapter isolation boundary), the adapter (updates -> Robin events),
+│                 keys, the sender (Robin's messages out)
 ├── core/
 │   ├── events/   Robin's event types (Zod) and dedup keys. Pure
 │   ├── reducer/  ChatState (Zod) and reduce(state, events). Pure
@@ -50,13 +50,13 @@ src/
 
 Dependencies point inward. `db/`, `core/` and `tdlib-api/` never import `sources/`, `agent/`, `cli/` or `app.ts`. `core/events`, `core/reducer`, `core/render` and `core/markdown` additionally import nothing but each other and Zod: no I/O, database, config or logging. Both rules are enforced by Biome overrides; do not weaken them to make an import compile, move the code instead.
 
-TDLib-specific concerns (raw update storage, the adapter, chat keys, sending) belong to `sources/tdlib`. Core and agent only ever see Robin events and opaque keys; the agent reaches Telegram through its `Outbound` interface, which `app.ts` fills with the TDLib sender.
+TDLib-specific concerns (the adapter, chat keys, sending) belong to `sources/tdlib`. Core and agent only ever see Robin events and opaque keys; the agent reaches Telegram through its `Outbound` interface, which `app.ts` fills with the TDLib sender.
 
 ## Lifecycle
 
 Every resource registers its cleanup on the `Lifecycle` right after it is acquired; `stop()` undoes them in reverse, so a half-finished startup is undone exactly as far as it got.
 
-Startup order in `app.ts`: open db and migrate -> event store and inbound queues -> raw update writer -> TDLib hub -> accounts (user, then preload its main chat list, then bot; each subscribes before `start()`, the bot's send tracker included) -> recover pending sends -> agent (only with `agent.provider` set). Shutdown is the reverse: runs are aborted and awaited without a time limit (everything a run waits on ends with the abort or its own timeout), accounts close (their last updates are still stored and adapted), the receive worker stops, buffered raw rows flush, queued inbound events commit, the db closes. Logging belongs to the process and shuts down last.
+Startup order in `app.ts`: open db and migrate -> event store and inbound queues -> TDLib hub -> accounts (user, then preload its main chat list, then bot; each subscribes before `start()`, the bot's send tracker included) -> recover pending sends -> agent (only with `agent.provider` set). Shutdown is the reverse: runs are aborted and awaited without a time limit (everything a run waits on ends with the abort or its own timeout), accounts close (their last updates are still adapted), the receive worker stops, queued inbound events commit, the db closes. Logging belongs to the process and shuts down last.
 
 Failures no caller can await (receive loop dead, storage down for good, account gone) go through `ProcessContext.fatal`: log, run the lifecycle, exit 1. Never simulate this with uncaught exceptions or timers.
 
@@ -72,11 +72,11 @@ Failures no caller can await (receive loop dead, storage down for good, account 
 
 ### Accounts
 
-The user account owns ingress for groups. The bot sends, runs with privacy mode off, and stores in groups only what the user cannot see (`update-filter.ts`). Both accounts store every non-secret chat's `updateNewChat` and title: the adapter knows chats per account, so a kept update needs its chat introduced in the same account's `raw_updates`. A send returns only after TDLib's `updateMessageSendSucceeded` / `updateMessageSendFailed`.
+The user account owns ingress for groups. The bot sends, runs with privacy mode off, and owns ingress for its private chats. A send returns only after TDLib's `updateMessageSendSucceeded` / `updateMessageSendFailed`.
 
 ### Adapter
 
-The adapter is fed exactly what the update filter keeps, which is exactly what `raw_updates` stores, and remembers only what those updates taught it (chat kinds and titles, user names, an edit's pending content). Running it over `raw_updates` again rebuilds the same events, so anything it needs must pass the filter. Served: supergroups through the user account, private chats through the bot. An update for a chat TDLib has not introduced yet is still kept by the filter and skipped by the adapter (or titled `""` when referenced as a sender or forward origin); an unknown user is named `""` until their `updateUser` arrives and corrects it through a profile update. The ingest is an isolation boundary for both the filter and the adapter: a filter error is logged and the update is kept; an adapter error is logged and the update is skipped (already headed for `raw_updates`, so a replay recovers it). Storing and committing stay fatal.
+The adapter turns TDLib updates from both accounts directly into Robin inbound items, remembering only what those updates taught it (chat kinds and titles, user names, an edit's pending content). Served: supergroups through the user account, private chats through the bot. An update for a chat TDLib has not introduced yet is skipped (or titled `""` when referenced as a sender or forward origin); an unknown user is named `""` until their `updateUser` arrives and corrects it through a profile update. The ingest is an isolation boundary: an update the adapter throws on is logged with its payload and skipped so one odd update never stops the bot. Committing to the store stays fatal.
 
 ### Events and Timestamps
 
@@ -99,7 +99,7 @@ The adapter is fed exactly what the update filter keeps, which is exactly what `
 
 ### Storage
 
-Raw updates leave the write buffer only once committed. A failing write keeps every row and retries with backoff, then calls `fatal`; rows are never dropped to make progress. `events` is append-only.
+`events` is append-only.
 
 ## Conventions
 

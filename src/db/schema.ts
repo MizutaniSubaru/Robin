@@ -3,8 +3,6 @@
 // other *_at columns are milliseconds.
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
-import type * as td from "../tdlib-api/td-api.ts";
-
 type JsonObject = Record<string, unknown>;
 
 const nowMs = () => Date.now();
@@ -33,20 +31,6 @@ export const events = sqliteTable(
     uniqueIndex("events_chat_dedup_key_uq").on(t.chat, t.dedupKey),
     index("events_chat_ts_idx").on(t.chat, t.ts, t.id),
   ],
-);
-
-// Raw TDLib updates the adapter needs, for debugging and for re-running it over old data.
-// Filtered on the way in (createUpdateFilter); no retention period until the event schema settles
-export const rawUpdates = sqliteTable(
-  "raw_updates",
-  {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    account: text("account").notNull(),
-    type: text("type").$type<td.Update["@type"]>().notNull(),
-    payload: text("payload", { mode: "json" }).$type<td.Update>().notNull(),
-    receivedAt: integer("received_at").notNull(),
-  },
-  (t) => [index("raw_updates_received_at_idx").on(t.receivedAt)],
 );
 
 // Reducer checkpoints

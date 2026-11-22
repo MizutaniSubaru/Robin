@@ -3,7 +3,6 @@ import { describe, expect, test } from "bun:test";
 import type { InboundItem } from "../../src/core/store/index.ts";
 import { getLogger } from "../../src/log/index.ts";
 import { createIngest, createTelegramAdapter, type td } from "../../src/sources/tdlib/index.ts";
-import { createUpdateFilter } from "../../src/sources/tdlib/update-filter.ts";
 import { update } from "../fixtures/td.ts";
 
 const GROUP = -1003754645572;
@@ -25,13 +24,10 @@ const message = (userId: number, serverId = 1) =>
 
 describe("createIngest", () => {
   // Regression: an update the adapter threw on was fatal, so one odd update stopped the bot
-  test("stores every kept update, and skips one the adapter fails on", () => {
-    const stored: td.Update["@type"][] = [];
+  test("skips an update the adapter fails on and keeps processing later ones", () => {
     const accepted: InboundItem[] = [];
     const real = createTelegramAdapter({ botUserId: 900 });
     const listener = createIngest("user", {
-      filter: { keep: (u) => u["@type"] !== "updateOption" },
-      rawUpdates: { push: (_account, u) => stored.push(u["@type"]) },
       adapter: {
         adapt: (account, u, receivedAt) => {
           if (u["@type"] === "updateNewMessage") throw new Error("adapter bug");
@@ -53,42 +49,12 @@ describe("createIngest", () => {
     listener(update({ "@type": "updateOption", name: "version", value: { "@type": "optionValueEmpty" } }), T);
     listener(message(7), T + 1);
     listener(newChat, T + 2);
-    expect(stored).toEqual(["updateNewMessage", "updateNewChat"]);
     expect(accepted).toMatchObject([{ type: "chat", chat: `tg:${GROUP}`, title: "Lab" }]);
   });
 
-  // Regression: the filter threw outside the isolation boundary, so its failure was fatal
-  test("keeps and adapts an update the filter fails on", () => {
-    const stored: td.Update["@type"][] = [];
-    const adapted: td.Update["@type"][] = [];
-    const listener = createIngest("user", {
-      filter: {
-        keep: () => {
-          throw new Error("filter bug");
-        },
-      },
-      rawUpdates: { push: (_account, u) => stored.push(u["@type"]) },
-      adapter: {
-        adapt: (_account, u) => {
-          adapted.push(u["@type"]);
-          return [];
-        },
-      },
-      inbound: { accept: () => {} },
-      log: getLogger("test"),
-    });
-    expect(() => listener(message(7), T)).not.toThrow();
-    expect(stored).toEqual(["updateNewMessage"]);
-    expect(adapted).toEqual(["updateNewMessage"]);
-  });
-
-  // Regression: a message for a chat or from a user TDLib had not introduced yet threw in the filter
-  // (fatal) or the adapter (message lost)
   test("a message before its chat and sender are introduced neither throws nor stops later ones", () => {
     const accepted: InboundItem[] = [];
     const listener = createIngest("user", {
-      filter: createUpdateFilter("user"),
-      rawUpdates: { push: () => {} },
       adapter: createTelegramAdapter({ botUserId: 900 }),
       inbound: { accept: (item) => accepted.push(item) },
       log: getLogger("test"),
@@ -113,19 +79,11 @@ describe("createIngest", () => {
     ]);
   });
 
-  // Regression: the bot's filter dropped channel and group updateNewChat, so a forward from a channel
-  // into a private chat failed in the adapter, live and on every replay of raw_updates
   test("the bot names a channel a private message was forwarded from", () => {
-    const stored: td.Update[] = [];
-    const replay = () => {
-      const adapter = createTelegramAdapter({ botUserId: 900 });
-      return stored.flatMap((u, i) => adapter.adapt("bot", u, T + i));
-    };
+    const accepted: InboundItem[] = [];
     const listener = createIngest("bot", {
-      filter: createUpdateFilter("bot"),
-      rawUpdates: { push: (_account, u) => stored.push(u) },
       adapter: createTelegramAdapter({ botUserId: 900 }),
-      inbound: { accept: () => {} },
+      inbound: { accept: (item) => accepted.push(item) },
       log: getLogger("test"),
     });
     const newChat = (id: number, type: td.ChatType, title: string) =>
@@ -163,7 +121,7 @@ describe("createIngest", () => {
       }),
       T + 3,
     );
-    expect(replay().filter((item) => item.type === "event")).toMatchObject([
+    expect(accepted.filter((item) => item.type === "event")).toMatchObject([
       { chat: "tg:bot:7", body: { kind: "message.created", forwardedFrom: "News" } },
     ]);
   });

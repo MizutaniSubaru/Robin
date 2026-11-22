@@ -13,11 +13,9 @@ import {
   botUserIdFromToken,
   createAccount,
   createIngest,
-  createRawUpdateWriter,
   createSendTracker,
   createTelegramAdapter,
   createTelegramSender,
-  createUpdateFilter,
   preloadChats,
   type SendTracker,
   startTdHub,
@@ -43,9 +41,6 @@ export async function createApp(
   const inbound = createInbound(store, storeLog, { onFatal: fatal });
   lc.defer("inbound events", () => inbound.close());
 
-  const rawUpdates = createRawUpdateWriter(db, { log: storeLog, onFatal: fatal });
-  lc.defer("raw updates", () => rawUpdates.close());
-
   const hub = startTdHub(config, paths, lc, fatal);
   const adapter = createTelegramAdapter({
     botUserId: botUserIdFromToken(env.botToken),
@@ -60,9 +55,7 @@ export async function createApp(
     subscribe?: (account: TdAccount) => void,
   ): Promise<TdAccount> => {
     const account = createAccount(hub, config, paths, env, lc, { name, autoRestart: true, onFatal: fatal });
-    account.onUpdate(
-      createIngest(name, { filter: createUpdateFilter(name), rawUpdates, adapter, inbound, log: ingestLog }),
-    );
+    account.onUpdate(createIngest(name, { adapter, inbound, log: ingestLog }));
     subscribe?.(account);
     await account.start();
     return account;

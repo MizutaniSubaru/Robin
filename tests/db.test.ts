@@ -54,7 +54,6 @@ describe("migrations", () => {
       "files",
       "llm_calls",
       "media_descriptions",
-      "raw_updates",
       "stickers",
       "tool_calls",
       "users",
@@ -178,13 +177,15 @@ describe("0001_edit_key", () => {
   test("keys an edit by the receive time of its update", () => {
     const { old, dir } = oldDb();
     try {
-      old.orm
-        .insert(schema.rawUpdates)
-        .values([
-          editedAt(1_800_000_000_400_000, 1_800_000_000),
-          editedAt(1_800_000_000_700_000, 1_800_000_000),
-        ])
-        .run();
+      const insertRaw = old.client.prepare(
+        "INSERT INTO raw_updates (account, type, payload, received_at) VALUES (?, ?, ?, ?)",
+      );
+      for (const row of [
+        editedAt(1_800_000_000_400_000, 1_800_000_000),
+        editedAt(1_800_000_000_700_000, 1_800_000_000),
+      ]) {
+        insertRaw.run(row.account, row.type, JSON.stringify(row.payload), row.receivedAt);
+      }
       old.orm.insert(schema.events).values(oldEdit).run();
       runMigrations(old);
       const row = old.orm.select().from(schema.events).get();

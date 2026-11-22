@@ -2,12 +2,10 @@
 // profiles, chat metadata) for the store.
 //
 // Served: supergroups through the user account, private chats through the bot. Basic groups (their
-// message ids differ per account) and everything else are skipped; raw_updates still keeps them.
+// message ids differ per account) and everything else are skipped.
 // Messages Robin sent itself are skipped too: Pipeline B already recorded them.
 //
-// Its input is exactly what raw_updates stores, and it remembers only what those updates taught it
-// (chat kinds and titles, user names, an edit's new content), so replaying raw_updates rebuilds the
-// same events
+// Remembers only what updates taught it (chat kinds and titles, user names, an edit's pending content)
 
 import type { Content, ContentPart, ReplyRef } from "../../core/events/index.ts";
 import type { ChatType, InboundEvent, InboundItem, SourceBody } from "../../core/store/index.ts";
@@ -63,8 +61,7 @@ export function createTelegramAdapter({
   // TDLib introduces every user and chat before using them, but should it ever not (a deleted
   // account, an old forward, a chat not loaded yet) Robin must neither lose the message nor stop.
   // An unknown user is named "", as TDLib names deleted accounts, and that name is remembered, so the
-  // user's updateUser, whenever it comes, corrects it through a profile update. Same input, same
-  // output: a replay of raw_updates still rebuilds the same events
+  // user's updateUser, whenever it comes, corrects it through a profile update
   function userName(userId: number): string {
     const name = users.get(userId);
     if (name !== undefined) return name;
@@ -105,7 +102,13 @@ export function createTelegramAdapter({
 
   function content(value: td.MessageContent, names: Record<string, string>): Content | undefined {
     const parts = contentParts(value);
-    if (parts === undefined) return undefined;
+    if (parts === undefined) {
+      log.debug("Skipped unhandled message content {contentType}", {
+        contentType: value["@type"],
+        content: value,
+      });
+      return undefined;
+    }
     for (const part of parts) {
       if (part.type !== "text") continue;
       for (const entity of part.entities) {
@@ -181,8 +184,8 @@ export function createTelegramAdapter({
       inbound(chat, account, receivedAt, update.edit_date, names, {
         kind: "message.edited",
         messageId: String(messageId),
-        // The update's receive time names it: raw_updates keeps it with the update, and in µs two
-        // edits of one message never share it, while edit_date does within a second
+        // The update's receive time names it: in µs two edits of one message never share it, while
+        // edit_date does within a second
         editKey: String(receivedAt),
         content: body,
       }),
@@ -236,6 +239,7 @@ export function createTelegramAdapter({
         case "updateNewMessage":
           return newMessage(account, update.message, receivedAt);
         case "updateMessageContent": {
+          if (served(account, update.chat_id) === undefined) return [];
           const pending = accounts[account].editedContent;
           const key = `${update.chat_id}:${update.message_id}`;
           // Re-inserted, so the map stays in arrival order and the oldest entry goes first
@@ -253,6 +257,11 @@ export function createTelegramAdapter({
           return deleted(account, update, receivedAt);
         // Reactions, membership and send results are not modelled as inbound events yet
         default:
+          log.debug("Ignored unhandled update {type} from {account}", {
+            type: update["@type"],
+            account,
+            update,
+          });
           return [];
       }
     },

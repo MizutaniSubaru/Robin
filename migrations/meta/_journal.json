@@ -15,6 +15,13 @@
       "when": 1794231524329,
       "tag": "0001_edit_key",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1795358909026,
+      "tag": "0002_drop_raw_updates",
+      "breakpoints": true
     }
   ]
 }

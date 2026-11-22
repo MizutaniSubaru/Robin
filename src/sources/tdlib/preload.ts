@@ -2,9 +2,9 @@
 //
 // TDLib sends a chat's updateNewChat (and its users' updateUser) only once something needs the chat.
 // Loading the list up front introduces the chats Robin is likely to meet (its groups, the channels
-// that post or forward into them, private chats) to the filter and the adapter before their messages
-// do. Only user accounts have chat lists; the bot learns chats from its updates and loads the one it
-// sends to with getChat (outbound.ts)
+// that post or forward into them, private chats) to the adapter before their messages do. Only user
+// accounts have chat lists; the bot learns chats from its updates and loads the one it sends to with
+// getChat (outbound.ts)
 
 import type { Logger } from "../../log/index.ts";
 import type { TdAccount } from "./account.ts";
