@@ -21,7 +21,7 @@ function brokenCloseHub(): TdHub {
       ),
     );
   return {
-    stats: { generation: 1, restarts: 0, pending: 0, clients: 1, instances: 1 },
+    stats: { pending: 0, clients: 1, instances: 1 },
     registerClient(s) {
       sink = s;
       authState("authorizationStateWaitTdlibParameters");

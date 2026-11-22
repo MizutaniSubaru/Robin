@@ -1,24 +1,52 @@
-// Hub: the one owner of libtdjson in the process. Runs the receive worker, matches TDLib's responses
-// to the requests that asked for them (by @extra) and hands updates to the right client
-// (by @client_id)
+// Hub: the one owner of libtdjson in the process. Runs a single receive worker (this file, when loaded
+// off the main thread), matches TDLib's responses to the requests that asked for them (by @extra) and
+// hands updates to the right client (by @client_id)
+
+import { dlopen, FFIType } from "bun:ffi";
 
 import type { Logger } from "../../log/index.ts";
 import type * as td from "../../tdlib-api/td-api.ts";
 import { TdClosedError, TdError, TdTimeoutError } from "./errors.ts";
-import { openTdJson, parseTdJson, type TdEnvelope } from "./ffi.ts";
-import {
-  CTRL_SLOTS,
-  Ctrl,
-  type ReceivedItem,
-  type ReceiveLoopConfig,
-  type WorkerInit,
-  type WorkerMessage,
-} from "./protocol.ts";
+import { openTdJson, parseTdJson, readCString, type TdEnvelope } from "./ffi.ts";
+
+export interface ReceivedItem {
+  // One td_receive result, still unparsed
+  raw: string;
+  // Wall-clock time in µs at which it left td_receive
+  receivedAt: number;
+}
+
+export interface ReceiveLoopConfig {
+  // Upper bound on how long one td_receive blocks, so stop requests are noticed
+  receiveTimeoutSec: number;
+  // Strings collected before a batch is posted
+  maxBatch: number;
+}
+
+export interface WorkerInit extends ReceiveLoopConfig {
+  libraryPath: string;
+  // One Int32 slot: 0 while running, 1 to leave the receive loop
+  stop: SharedArrayBuffer;
+}
+
+export type WorkerMessage =
+  | { type: "ready" }
+  | { type: "batch"; items: ReceivedItem[] }
+  // The loop has exited and will not call td_receive again
+  | { type: "stopped" }
+  | { type: "fatal"; message: string; stack: string | undefined };
+
+export interface ReceiveLoopDeps {
+  // td_receive, with the returned string already copied out of TDLib's buffer
+  receive(timeoutSec: number): string | null;
+  post(message: WorkerMessage): void;
+  nowUs(): number;
+}
 
 export interface ClientSink {
   // Every update for this client, in TDLib order
   deliver(update: td.Update, receivedAt: number): void;
-  // The hub dropped the client without TDLib closing it (hub stopped)
+  // The hub dropped the client without TDLib closing it (hub stopped or receive worker failed)
   detached(reason: string): void;
 }
 
@@ -28,14 +56,12 @@ export interface TdHubOptions {
   logVerbosity: number;
   logFile: string;
   log: Logger;
-  // Called when receiving cannot go on (stalled inside TDLib, crash loop), or once when a client
-  // failed to handle an update. The caller should exit and let the process supervisor restart Robin
+  // Called when the receive worker fails or exits unexpectedly, or once when a client fails to handle
+  // an update. The caller should exit and let the process supervisor restart Robin
   onFatal(error: Error): void;
   loop?: Partial<ReceiveLoopConfig>;
   // Default per-request timeout; 0 disables it
   requestTimeoutMs?: number;
-  // No heartbeat for this long means td_receive is stuck
-  stallTimeoutMs?: number;
   // Worker script override, for tests
   workerUrl?: string | URL;
 }
@@ -45,8 +71,6 @@ export interface SendOptions {
 }
 
 export interface TdHubStats {
-  generation: number;
-  restarts: number;
   pending: number;
   clients: number;
   // TDLib instances not yet reported closed, with or without a client attached
@@ -75,58 +99,76 @@ interface Pending {
   timer?: Timer;
 }
 
-interface WorkerHandle {
-  generation: number;
-  worker: Worker;
-  // The loop has exited (graceful stop) or the thread is gone (crash)
-  stopped: Promise<void>;
-  markStopped(): void;
-}
-
-const DEFAULT_LOOP: ReceiveLoopConfig = { receiveTimeoutSec: 1, maxBatch: 256, maxInFlight: 64 };
+const DEFAULT_LOOP: ReceiveLoopConfig = { receiveTimeoutSec: 1, maxBatch: 256 };
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
-const DEFAULT_STALL_TIMEOUT_MS = 30_000;
-const WATCHDOG_INTERVAL_MS = 2_000;
-const RESTART_BASE_MS = 200;
-const RESTART_MAX_MS = 30_000;
-const CRASH_WINDOW_MS = 5 * 60_000;
-const MAX_CRASHES_IN_WINDOW = 5;
 const INSTANCE_CLOSE_TIMEOUT_MS = 15_000;
-const WORKER_URL = new URL("./receive-worker.ts", import.meta.url);
+const WORKER_URL = new URL(import.meta.url);
 
-// td_receive is process-wide, so the control block (and its RECEIVING mutex) is too,
-// and generations never repeat across hubs
-const ctrl = new Int32Array(new SharedArrayBuffer(CTRL_SLOTS * Int32Array.BYTES_PER_ELEMENT));
-let lastGeneration = 0;
-// Released only once the hub's worker has left its loop
+// td_receive must have a single owner per process; released only once the worker has left its loop
 let hubOpen = false;
 
-// Recovery: a crashed worker is replaced once its thread is gone (TDLib keeps queuing meanwhile);
-// a worker stuck inside td_receive cannot be replaced safely, so that is reported through onFatal.
-// A client failing to handle an update is reported too, but receiving goes on, so the lifecycle can
-// still close every account in order.
+// Kept free of FFI and Worker globals so it can be tested in-process.
+// Runs until the stop flag is set; throws only on bugs, which fail the worker
+export function runReceiveLoop(stop: Int32Array, config: ReceiveLoopConfig, deps: ReceiveLoopDeps): void {
+  while (Atomics.load(stop, 0) === 0) {
+    const items: ReceivedItem[] = [];
+    // Block for the first item, then drain whatever is already queued without waiting
+    let timeout = config.receiveTimeoutSec;
+    while (items.length < config.maxBatch) {
+      const result = deps.receive(timeout);
+      if (result === null) break;
+      items.push({ raw: result, receivedAt: deps.nowUs() });
+      timeout = 0;
+    }
+    if (items.length > 0) deps.post({ type: "batch", items });
+  }
+  deps.post({ type: "stopped" });
+}
+
+// Worker entry point: loads libtdjson, runs the receive loop and posts batches to the main thread.
+// Data flows one way; the main thread calls td_send / td_execute directly (both are thread-safe)
+declare const self: Worker;
+if (!Bun.isMainThread) {
+  const post = (message: WorkerMessage) => self.postMessage(message);
+  self.onmessage = (event: MessageEvent<WorkerInit>) => {
+    const init = event.data;
+    try {
+      const { symbols } = dlopen(init.libraryPath, {
+        td_receive: { args: [FFIType.f64], returns: FFIType.ptr },
+      });
+      post({ type: "ready" });
+      runReceiveLoop(new Int32Array(init.stop), init, {
+        receive: (timeout) => readCString(symbols.td_receive(timeout)),
+        post,
+        nowUs: () => Math.floor((performance.timeOrigin + performance.now()) * 1000),
+      });
+    } catch (error) {
+      const e = error instanceof Error ? error : new Error(String(error));
+      post({ type: "fatal", message: e.message, stack: e.stack });
+      throw e;
+    }
+  };
+}
+
+// Recovery: the single receive worker is never replaced in-process; if it fails or exits unexpectedly,
+// the hub reports through onFatal so the process exits and its supervisor restarts it. A client failing
+// to handle an update is reported too, while receiving goes on so shutdown can close every account.
 // Exit: TDLib aborts the process (SIGABRT from one of its threads while exit() runs static destructors)
 // when an instance is still open, so stop() closes leftovers while it can still receive their
-// authorizationStateClosed. Only a dead receive loop leaves them open
+// authorizationStateClosed. Only a dead receive worker leaves them open
 export function createTdHub(options: TdHubOptions): TdHub {
   if (hubOpen) throw new Error("A TdHub is already open: td_receive must have a single owner per process");
   hubOpen = true;
 
   const { log } = options;
   const loop: ReceiveLoopConfig = { ...DEFAULT_LOOP, ...options.loop };
+  const stopFlag = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   const clients = new Map<number, ClientSink>();
   // Outlives the sink: a detached client's TDLib instance is open until TDLib says otherwise
   const instances = new Set<number>();
   let onInstancesClosed: (() => void) | undefined;
   const pending = new Map<string, Pending>();
-  let crashes: number[] = [];
-  let current: WorkerHandle | undefined;
-  let generation = 0;
-  let restarts = 0;
   let nextExtra = 0;
-  let lastHeartbeat = -1;
-  let lastHeartbeatAt = Date.now();
-  let restartTimer: Timer | undefined;
   let stopping: Promise<void> | undefined;
   let stopRequested = false;
   // Receiving is gone for good
@@ -152,9 +194,27 @@ export function createTdHub(options: TdHubOptions): TdHub {
     throw error;
   }
 
-  spawn();
-  const watchdog = setInterval(checkHeartbeat, WATCHDOG_INTERVAL_MS);
-  watchdog.unref();
+  // terminate() does not interrupt a thread blocked in td_receive: it keeps looping in native code.
+  // So stop() sets stopFlag and waits for the worker to leave its loop before terminating it
+  const worker = new Worker(options.workerUrl ?? WORKER_URL);
+  const { promise: workerStopped, resolve: markWorkerStopped } = Promise.withResolvers<void>();
+
+  worker.onmessage = (event: MessageEvent<WorkerMessage>) => onWorkerMessage(event.data);
+  worker.addEventListener("error", (event) => {
+    log.error("Receive worker threw: {message}", { message: event.message });
+  });
+  worker.addEventListener("close", (event) => {
+    markWorkerStopped();
+    if (stopRequested) return;
+    fail(new Error(`Receive worker exited unexpectedly with code ${event.code}`));
+  });
+
+  const init: WorkerInit = {
+    ...loop,
+    libraryPath: options.libraryPath,
+    stop: stopFlag.buffer as SharedArrayBuffer,
+  };
+  worker.postMessage(init);
 
   function execute<R extends td.Request>(request: R): td.ResultOf<R> {
     const result = tdjson.execute(request);
@@ -234,32 +294,22 @@ export function createTdHub(options: TdHubOptions): TdHub {
   }
 
   async function shutdown(): Promise<void> {
-    clearInterval(watchdog);
-    clearTimeout(restartTimer);
     if (clients.size > 0) {
       log.warn("Stopping TDLib with {count} clients still open", { count: clients.size });
     }
     detachClients("TDLib stopped");
 
-    const handle = current;
-    if (!handle) {
-      hubOpen = false;
-      return;
-    }
     if (!failed) await closeOpenInstances();
-    // Revoking ownership makes the loop exit after its current td_receive returns
-    Atomics.store(ctrl, Ctrl.OWNER, 0);
-    Atomics.notify(ctrl, Ctrl.IN_FLIGHT);
+    // Setting the stop flag makes the loop exit after its current td_receive returns
+    Atomics.store(stopFlag, 0, 1);
     const graceMs = loop.receiveTimeoutSec * 1000 + 5_000;
     const stopped = await Promise.race([
-      handle.stopped.then(() => true),
+      workerStopped.then(() => true),
       Bun.sleep(graceMs).then(() => false),
     ]);
-    current = undefined;
     // hubOpen stays set: the stuck thread may still call td_receive, so no new hub may start
     if (!stopped) throw new Error(`Receive worker did not stop within ${graceMs} ms`);
-    // Safe now: the thread is out of td_receive. Never terminate it earlier, see spawn()
-    handle.worker.terminate();
+    worker.terminate();
     hubOpen = false;
   }
 
@@ -276,107 +326,29 @@ export function createTdHub(options: TdHubOptions): TdHub {
         log.debug("close for TDLib instance {clientId} failed", { clientId, error }),
       );
     }
-    const closed = await Promise.race([
-      allClosed.then(() => true),
-      Bun.sleep(INSTANCE_CLOSE_TIMEOUT_MS).then(() => false),
-    ]);
+    await Promise.race([allClosed, Bun.sleep(INSTANCE_CLOSE_TIMEOUT_MS)]);
     onInstancesClosed = undefined;
-    if (!closed) {
+    if (instances.size > 0) {
       log.error("{count} TDLib instances did not close; TDLib may abort on exit", { count: instances.size });
     }
   }
 
-  function spawn(): void {
-    generation = ++lastGeneration;
-    const handleGeneration = generation;
-    // Batches still queued from a dead generation no longer count against the new one
-    Atomics.store(ctrl, Ctrl.IN_FLIGHT, 0);
-    Atomics.store(ctrl, Ctrl.OWNER, handleGeneration);
-    lastHeartbeatAt = Date.now();
-
-    // terminate() does not interrupt a thread blocked in td_receive: it keeps looping in native code,
-    // and a second receiver makes TDLib abort the process. So a worker is only ever replaced after
-    // it has left its loop on its own, and the RECEIVING mutex guards against mistakes here
-    const worker = new Worker(options.workerUrl ?? WORKER_URL);
-    const { promise: stopped, resolve: markStopped } = Promise.withResolvers<void>();
-    const handle: WorkerHandle = { generation: handleGeneration, worker, stopped, markStopped };
-    current = handle;
-
-    worker.onmessage = (event: MessageEvent<WorkerMessage>) => onWorkerMessage(handle, event.data);
-    worker.addEventListener("error", (event) => {
-      log.error("Receive worker {generation} threw: {message}", {
-        generation: handleGeneration,
-        message: event.message,
-      });
-    });
-    worker.addEventListener("close", (event) => onWorkerClose(handle, event.code));
-
-    const init: WorkerInit = {
-      ...loop,
-      libraryPath: options.libraryPath,
-      ctrl: ctrl.buffer as SharedArrayBuffer,
-      generation: handleGeneration,
-    };
-    worker.postMessage(init);
-  }
-
-  function onWorkerMessage(handle: WorkerHandle, message: WorkerMessage): void {
+  function onWorkerMessage(message: WorkerMessage): void {
     switch (message.type) {
       case "batch":
-        try {
-          deliverBatch(message.items);
-        } finally {
-          if (handle === current) {
-            Atomics.sub(ctrl, Ctrl.IN_FLIGHT, 1);
-            Atomics.notify(ctrl, Ctrl.IN_FLIGHT);
-          }
-        }
+        deliverBatch(message.items);
         return;
       case "ready":
-        log.debug("Receive worker {generation} ready", { generation: message.generation });
+        log.debug("Receive worker ready");
         return;
       case "stopped":
-        handle.markStopped();
+        markWorkerStopped();
         return;
       case "fatal":
-        log.error("Receive worker {generation} failed: {message}", {
-          generation: message.generation,
-          message: message.message,
-          stack: message.stack,
-        });
+        log.error("Receive worker failed: {message}", { message: message.message, stack: message.stack });
+        fail(new Error(`Receive worker failed: ${message.message}`));
         return;
     }
-  }
-
-  function onWorkerClose(handle: WorkerHandle, code: number): void {
-    handle.markStopped();
-    if (handle !== current || stopRequested) return;
-    current = undefined;
-
-    // A crash unwinds the JS stack, so the thread cannot still be inside td_receive
-    if (Atomics.load(ctrl, Ctrl.RECEIVING) !== 0) {
-      fail(new Error("Receive worker exited while holding the td_receive mutex"));
-      return;
-    }
-
-    const now = Date.now();
-    crashes = [...crashes.filter((at) => at >= now - CRASH_WINDOW_MS), now];
-    if (crashes.length > MAX_CRASHES_IN_WINDOW) {
-      fail(new Error(`Receive worker crashed ${crashes.length} times in ${CRASH_WINDOW_MS / 1000} s`));
-      return;
-    }
-
-    const delayMs = Math.min(RESTART_MAX_MS, RESTART_BASE_MS * 2 ** (crashes.length - 1));
-    log.error("Receive worker {generation} exited with code {code}, restarting in {delayMs} ms", {
-      generation: handle.generation,
-      code,
-      delayMs,
-    });
-    restartTimer = setTimeout(() => {
-      if (stopRequested || failed) return;
-      restarts++;
-      spawn();
-    }, delayMs);
   }
 
   // A batch has left TDLib for good, so one failing message must not take the rest of it down:
@@ -451,33 +423,13 @@ export function createTdHub(options: TdHubOptions): TdHub {
     }
   }
 
-  function checkHeartbeat(): void {
-    if (!current || stopRequested || failed) return;
-    const heartbeat = Atomics.load(ctrl, Ctrl.HEARTBEAT);
-    const now = Date.now();
-    if (heartbeat !== lastHeartbeat) {
-      lastHeartbeat = heartbeat;
-      lastHeartbeatAt = now;
-      return;
-    }
-    const stallMs = options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS;
-    if (now - lastHeartbeatAt > stallMs) {
-      const receiving = Atomics.load(ctrl, Ctrl.RECEIVING);
-      fail(
-        new Error(
-          `TDLib receive loop stalled for ${now - lastHeartbeatAt} ms` +
-            (receiving ? " inside td_receive" : ""),
-        ),
-      );
-    }
-  }
-
   // Receiving is gone for good. Nothing answers the clients after that, so they are detached instead of
   // left to time out in close(); their TDLib instances cannot be closed any more
   function fail(error: Error): void {
     if (failed) return;
     failed = true;
-    detachClients("TDLib receive loop failed");
+    onInstancesClosed?.();
+    detachClients("TDLib receive worker failed");
     options.onFatal(error);
   }
 
@@ -491,8 +443,6 @@ export function createTdHub(options: TdHubOptions): TdHub {
   return {
     get stats() {
       return {
-        generation,
-        restarts,
         pending: pending.size,
         clients: clients.size,
         instances: instances.size,

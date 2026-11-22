@@ -24,8 +24,8 @@ Bun (runtime, tests, FFI, workers), TypeScript, Biome, SQLite via `bun:sqlite` +
 src/
 ├── tdlib-api/    Generated TDLib types (td-api.ts from td_api.tl). Neutral: anyone may import
 ├── sources/      Inputs from the outside world
-│   └── tdlib/    FFI, receive worker, hub, clients, accounts, auth, raw update filter and storage,
-│                 the ingest (filter -> raw_updates -> adapter), the adapter (updates -> Robin
+│   └── tdlib/    FFI, hub (with its receive worker), clients, accounts, auth, raw update filter and
+│                 storage, the ingest (filter -> raw_updates -> adapter), the adapter (updates -> Robin
 │                 events), keys, the sender (Robin's messages out)
 ├── core/
 │   ├── events/   Robin's event types (Zod) and dedup keys. Pure
@@ -64,7 +64,7 @@ Failures no caller can await (receive loop dead, storage down for good, account 
 
 ### TDLib Boundary
 
-- `td_receive` runs only in the receive worker; the main thread calls `td_send` / `td_execute`. The worker never calls `td_receive` on two threads at once (the `RECEIVING` slot is a mutex).
+- `td_receive` runs only in the hub's single receive worker (`hub.ts`); the main thread calls `td_send` / `td_execute`. Shutdown signals the worker through a shared stop flag and waits for it to leave the loop before terminating it; if the worker fails or exits unexpectedly, that is fatal.
 - `ffi.ts` `parseTdJson` checks the envelope and the hub's `dispatch` narrows it once; those are the only places TDLib JSON gets a static type. Everywhere else uses `tdlib-api` types; no `as` casts on TDLib data.
 - TDLib aborts the process at exit while one of its instances is still open. Accounts close their clients before the hub stops, and `hub.stop()` closes any instance left over; only a dead receive loop may leave one open. A client failing to handle an update is fatal, but receiving goes on so the shutdown can still close the accounts.
 - The generated types must match the pinned `prebuilt-tdlib` commit. After an upgrade run `bun run tdlib:types`; a test fails until then. Generated files are gitignored.

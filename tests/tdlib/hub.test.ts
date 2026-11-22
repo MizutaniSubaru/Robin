@@ -1,7 +1,7 @@
 // Runs against the real libtdjson, offline: test methods and the pre-login authorization states need no network
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,7 +10,13 @@ import { AuthorizationRequiredError, authorize } from "../../src/sources/tdlib/a
 import { createTdClient, type TdClient } from "../../src/sources/tdlib/client.ts";
 import { TdClosedError, TdError, TdTimeoutError } from "../../src/sources/tdlib/errors.ts";
 import { resolveTdjsonPath } from "../../src/sources/tdlib/ffi.ts";
-import { createTdHub, type TdHub, type TdHubOptions } from "../../src/sources/tdlib/hub.ts";
+import {
+  createTdHub,
+  runReceiveLoop,
+  type TdHub,
+  type TdHubOptions,
+  type WorkerMessage,
+} from "../../src/sources/tdlib/hub.ts";
 import type { td } from "../../src/sources/tdlib/index.ts";
 
 const log = getLogger("test");
@@ -182,25 +188,88 @@ describe("createTdHub", () => {
     expect(h.stats.instances).toBe(0);
   });
 
-  test("restarts a crashed receive worker without losing the client", async () => {
-    const marker = join(tmpdir(), `robin-crash-marker-${process.pid}`);
-    writeFileSync(marker, "crash");
-    try {
-      const h = openHub({ workerUrl: new URL("../fixtures/crash-once-worker.ts", import.meta.url) });
-      const client = openClient(h);
+  test("a crashed receive worker reports fatal once and detaches clients", async () => {
+    const h = openHub({ workerUrl: new URL("../fixtures/crash-worker.ts", import.meta.url) });
+    let detachedReason: string | undefined;
+    h.registerClient({
+      deliver() {},
+      detached(reason) {
+        detachedReason = reason;
+      },
+    });
 
-      // The first batch crashes generation 1; its response may or may not have made it out
-      await client.invoke({ "@type": "testCallEmpty" }, { timeoutMs: 1000 }).catch(() => {});
-      const deadline = Date.now() + 5000;
-      while (h.stats.restarts === 0 && Date.now() < deadline) await Bun.sleep(20);
-      expect(h.stats.restarts).toBe(1);
+    const deadline = Date.now() + 5000;
+    while (fatalErrors.length === 0 && Date.now() < deadline) await Bun.sleep(20);
+    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors[0]?.message).toMatch(/injected crash/);
+    expect(detachedReason).toBeDefined();
+    expect(h.stats.clients).toBe(0);
+    fatalErrors.length = 0;
 
-      // The TDLib instance survived; the new worker picks up its responses and updates
-      const echoed = await client.invoke({ "@type": "testCallString", x: "after crash" });
-      expect(echoed.value).toBe("after crash");
-    } finally {
-      rmSync(marker, { force: true });
-    }
+    // A crashed worker exits cleanly on stop so hubOpen is released
+    await h.stop();
+  });
+});
+
+describe("runReceiveLoop", () => {
+  test("drains queued items into one batch and exits when stop is set", () => {
+    const stop = new Int32Array(new SharedArrayBuffer(4));
+    const queue = ["a", "b", "c"];
+    const timeouts: number[] = [];
+    const posted: WorkerMessage[] = [];
+
+    runReceiveLoop(
+      stop,
+      { receiveTimeoutSec: 1, maxBatch: 10 },
+      {
+        receive(timeout) {
+          timeouts.push(timeout);
+          const next = queue.shift();
+          if (next === undefined) Atomics.store(stop, 0, 1);
+          return next ?? null;
+        },
+        post: (message) => posted.push(message),
+        nowUs: () => 1,
+      },
+    );
+
+    // Only the first call of a batch blocks
+    expect(timeouts).toEqual([1, 0, 0, 0]);
+    expect(posted).toEqual([
+      {
+        type: "batch",
+        items: [
+          { raw: "a", receivedAt: 1 },
+          { raw: "b", receivedAt: 1 },
+          { raw: "c", receivedAt: 1 },
+        ],
+      },
+      { type: "stopped" },
+    ]);
+  });
+
+  test("splits batches at maxBatch", () => {
+    const stop = new Int32Array(new SharedArrayBuffer(4));
+    let n = 0;
+    const batches: string[][] = [];
+    runReceiveLoop(
+      stop,
+      { receiveTimeoutSec: 1, maxBatch: 2 },
+      {
+        receive() {
+          if (n === 5) {
+            Atomics.store(stop, 0, 1);
+            return null;
+          }
+          return String(n++);
+        },
+        post: (message) => {
+          if (message.type === "batch") batches.push(message.items.map((item) => item.raw));
+        },
+        nowUs: () => 0,
+      },
+    );
+    expect(batches).toEqual([["0", "1"], ["2", "3"], ["4"]]);
   });
 });
 
