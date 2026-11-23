@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import type { RobinEvent } from "../../src/core/events/index.ts";
+import type { Content, RobinEvent } from "../../src/core/events/index.ts";
 import {
   createEventStore,
   createInbound,
@@ -142,6 +142,70 @@ describe("createEventStore", () => {
     expect(createProjection(db, store, log, { window }).load(CHAT).timeline[0]).toMatchObject({
       content: text("Hello"),
     });
+  });
+
+  // Regression: a content refresh (e.g. link preview) followed by a markup-only edit on an already-
+  // edited message carries an old edit_date and unchanged visible content; it must not record an edit
+  test("skips edits whose content matches the latest stored content, even across restarts", () => {
+    store.commitInbound(
+      message("41", alice, "Alice", T0, {
+        body: { ...message("41", alice, "Alice", T0).body, content: text("hi") } as InboundEvent["body"],
+      }),
+    );
+    const edit = (editKey: string, content: Content): InboundEvent => ({
+      type: "event",
+      chat: CHAT,
+      account: "user",
+      receivedAt: T0 + Number(editKey),
+      serverDate: Math.floor(T0 / 1_000_000) + 1,
+      body: { kind: "message.edited", messageId: "41", editKey, content },
+      users: {},
+    });
+
+    // Same content as message.created -> skipped
+    expect(store.commitInbound(edit("1", text("hi")))).toEqual([]);
+    // Real text change -> committed
+    expect(kinds(store.commitInbound(edit("2", text("hi!"))))).toEqual(["message.edited"]);
+    // Same content as the latest edit, even after reopening the store -> skipped
+    const reopened = createEventStore(db, log);
+    expect(reopened.commitInbound(edit("3", text("hi!")))).toEqual([]);
+    // Same text but formatting changed -> committed
+    expect(
+      kinds(
+        reopened.commitInbound(
+          edit("4", [{ type: "text", text: "hi!", entities: [{ type: "bold", offset: 0, length: 3 }] }]),
+        ),
+      ),
+    ).toEqual(["message.edited"]);
+  });
+
+  test("skips inbound edits targeting Robin's own messages", () => {
+    const self = store.appendSelf(CHAT, "bot", {
+      kind: "self.message",
+      runId: "r1",
+      replyTo: null,
+      content: text("see https://example.com"),
+    });
+    if (!self) throw new Error("expected self.message");
+    store.appendSelf(CHAT, "bot", {
+      kind: "self.send_result",
+      target: self.eventId,
+      result: "sent",
+      messageId: "99",
+      tempId: null,
+      error: null,
+    });
+    expect(
+      store.commitInbound({
+        type: "event",
+        chat: CHAT,
+        account: "user",
+        receivedAt: T0 + 10,
+        serverDate: Math.floor(T0 / 1_000_000) + 1,
+        body: { kind: "message.edited", messageId: "99", editKey: "10", content: text("changed") },
+        users: {},
+      }),
+    ).toEqual([]);
   });
 
   test("aliases survive a restart", () => {

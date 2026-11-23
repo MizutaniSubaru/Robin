@@ -2,7 +2,7 @@
 // their eventId and ts, drops duplicates and notifies listeners of every commit. Also keeps the chats
 // table (chat type and title)
 
-import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 
 import { type Db, schema } from "../../db/index.ts";
 import type { Logger } from "../../log/index.ts";
@@ -182,6 +182,13 @@ export function createEventStore(db: Db, log: Logger): EventStore {
         // A duplicate (already committed) must not derive anything either
         const key = dedupKeyOf(item.body);
         if (key !== null && hasDedupKey(db, item.chat, key)) return [];
+        // Skip phantom edits (e.g. a link-preview refresh followed by a markup-only edit with an old
+        // edit_date) whose visible content did not change, and inbound edits of Robin's own messages
+        if (item.body.kind === "message.edited") {
+          if (hasSelfMessage(db, item.chat, item.body.messageId)) return [];
+          const previous = latestMessageContent(db, item.chat, item.body.messageId);
+          if (previous !== undefined && Bun.deepEquals(previous, item.body.content, true)) return [];
+        }
         const derived = derive(item.chat, referenced(item), item.receivedAt, item.serverDate);
         return [...derived, event(item.chat, item.account, item.body, item.receivedAt, item.serverDate)];
       });
@@ -238,19 +245,7 @@ export function createEventStore(db: Db, log: Logger): EventStore {
       return [...open.values()];
     },
     isSelfMessage(chat, messageId) {
-      const row = db.orm
-        .select({ id: schema.events.id })
-        .from(schema.events)
-        .where(
-          and(
-            eq(schema.events.chat, chat),
-            eq(schema.events.kind, "self.send_result"),
-            sql`json_extract(${schema.events.payload}, '$.messageId') = ${messageId}`,
-          ),
-        )
-        .limit(1)
-        .all();
-      return row.length > 0;
+      return hasSelfMessage(db, chat, messageId);
     },
     onCommit(listener) {
       listeners.add(listener);
@@ -312,6 +307,40 @@ function hasDedupKey(db: Db, chat: string, dedupKey: string): boolean {
       .limit(1)
       .all().length > 0
   );
+}
+
+function hasSelfMessage(db: Db, chat: string, messageId: string): boolean {
+  return (
+    db.orm
+      .select({ id: schema.events.id })
+      .from(schema.events)
+      .where(
+        and(
+          eq(schema.events.chat, chat),
+          eq(schema.events.kind, "self.send_result"),
+          sql`json_extract(${schema.events.payload}, '$.messageId') = ${messageId}`,
+        ),
+      )
+      .limit(1)
+      .all().length > 0
+  );
+}
+
+function latestMessageContent(db: Db, chat: string, messageId: string): unknown {
+  const row = db.orm
+    .select({ payload: schema.events.payload })
+    .from(schema.events)
+    .where(
+      and(
+        eq(schema.events.chat, chat),
+        inArray(schema.events.kind, ["message.created", "message.edited"]),
+        sql`json_extract(${schema.events.payload}, '$.messageId') = ${messageId}`,
+      ),
+    )
+    .orderBy(desc(schema.events.ts), desc(schema.events.id))
+    .limit(1)
+    .get();
+  return row?.payload.content;
 }
 
 function loadDirectory(db: Db): Map<string, Map<string, KnownUser>> {
