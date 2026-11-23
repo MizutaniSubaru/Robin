@@ -8,7 +8,7 @@ import { toTdEntities } from "./entities.ts";
 import { TdError } from "./errors.ts";
 import { chatIdOf } from "./keys.ts";
 import { toServerMessageId, toTdMessageId } from "./message-id.ts";
-import type { SendTracker } from "./send-tracker.ts";
+import type { SendTracker, WaitOptions } from "./send-tracker.ts";
 
 // ok: false when Telegram said no (bad request, no rights, flood wait): final, the message failed.
 // Any other error is thrown: Robin does not know what happened, and the message stays pending
@@ -37,12 +37,24 @@ export interface TelegramSender {
   reconcile(chat: string, tempId: string): Promise<SendOutcome>;
 }
 
-export function createTelegramSender(bot: TdAccount, tracker: SendTracker): TelegramSender {
-  async function confirmed(chatId: number, tempId: number, signal?: AbortSignal): Promise<SendOutcome> {
-    const waiting = tracker.wait(chatId, tempId);
+export interface TelegramSenderOptions {
+  // How long reconcile() waits for a pre-restart tempId before giving up so stale ids do not leak
+  reconcileTimeoutMs?: number;
+}
+
+const DEFAULT_RECONCILE_TIMEOUT_MS = 120_000;
+
+export function createTelegramSender(
+  bot: TdAccount,
+  tracker: SendTracker,
+  options?: TelegramSenderOptions,
+): TelegramSender {
+  const reconcileTimeoutMs = options?.reconcileTimeoutMs ?? DEFAULT_RECONCILE_TIMEOUT_MS;
+
+  async function confirmed(chatId: number, tempId: number, waitOptions?: WaitOptions): Promise<SendOutcome> {
     let final: td.message;
     try {
-      final = await (signal ? abortable(waiting, signal) : waiting);
+      final = await tracker.wait(chatId, tempId, waitOptions);
     } catch (error) {
       return rejected(error);
     }
@@ -85,10 +97,10 @@ export function createTelegramSender(bot: TdAccount, tracker: SendTracker): Tele
         return rejected(error);
       }
       onAccepted(String(pending.id));
-      return confirmed(chatId, pending.id, signal);
+      return confirmed(chatId, pending.id, signal ? { signal } : undefined);
     },
     reconcile(chat, tempId) {
-      return confirmed(chatIdOf(chat), Number(tempId));
+      return confirmed(chatIdOf(chat), Number(tempId), { timeoutMs: reconcileTimeoutMs });
     },
   };
 }
@@ -96,22 +108,4 @@ export function createTelegramSender(bot: TdAccount, tracker: SendTracker): Tele
 function rejected(error: unknown): SendOutcome {
   if (error instanceof TdError) return { ok: false, error: `${error.code}: ${error.tdMessage}` };
   throw error;
-}
-
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
 }

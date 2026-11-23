@@ -24,7 +24,7 @@ export { botPrivateChatKey, botUserIdFromToken, chatIdOf, groupChatKey, userKey 
 export { toServerMessageId, toTdMessageId } from "./message-id.ts";
 export { createTelegramSender, type SendOutcome, type TelegramSender } from "./outbound.ts";
 export { preloadChats } from "./preload.ts";
-export { createSendTracker, type SendTracker } from "./send-tracker.ts";
+export { createSendTracker, type SendTracker, type WaitOptions } from "./send-tracker.ts";
 
 const APP_VERSION = "0.0.0";
 

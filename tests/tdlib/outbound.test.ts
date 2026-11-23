@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { TdAccount } from "../../src/sources/tdlib/account.ts";
 import { TdError } from "../../src/sources/tdlib/errors.ts";
-import { createTelegramSender, type td } from "../../src/sources/tdlib/index.ts";
+import { createSendTracker, createTelegramSender, type td } from "../../src/sources/tdlib/index.ts";
 import type { SendTracker } from "../../src/sources/tdlib/send-tracker.ts";
 
 const GROUP = -1003754645572;
@@ -62,5 +62,26 @@ describe("createTelegramSender", () => {
     });
     expect(outcome).toEqual({ ok: false, error: "400: Chat not found" });
     expect(requests).toEqual(["getChat"]);
+  });
+
+  test("send passes AbortSignal to the tracker and rethrows on abort", async () => {
+    const { bot } = fakeBot(new Set([GROUP]), new Set([GROUP]));
+    const liveTracker = createSendTracker(() => () => {});
+    const controller = new AbortController();
+    const pending = createTelegramSender(bot, liveTracker).send(
+      `tg:${GROUP}`,
+      text,
+      null,
+      () => controller.abort(new Error("stopping")),
+      controller.signal,
+    );
+    await expect(pending).rejects.toThrow("stopping");
+  });
+
+  test("reconcile gives up after its timeout so stale temp ids do not linger", async () => {
+    const { bot } = fakeBot(new Set([GROUP]), new Set([GROUP]));
+    const liveTracker = createSendTracker(() => () => {});
+    const sender = createTelegramSender(bot, liveTracker, { reconcileTimeoutMs: 20 });
+    await expect(sender.reconcile(`tg:${GROUP}`, String(TEMP_ID))).rejects.toThrow(/No send confirmation/);
   });
 });

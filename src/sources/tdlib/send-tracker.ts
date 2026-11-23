@@ -12,12 +12,17 @@ interface Waiter {
   settle(outcome: Outcome): void;
 }
 
+export interface WaitOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
 export interface SendTracker {
   // Resolves with the final message once TDLib confirms the send of the temporary message tempId in chatId.
   // Safe to call after the confirmation already arrived: the hub delivers a whole worker batch
   // synchronously, so updateMessageSendSucceeded can land before the caller's await resumes.
-  // Without timeoutMs it waits for good: TDLib always reports a final state while it runs
-  wait(chatId: number, tempId: number, timeoutMs?: number): Promise<td.message>;
+  // Without timeoutMs it waits until settled, aborted or disposed
+  wait(chatId: number, tempId: number, options?: WaitOptions): Promise<td.message>;
   dispose(): void;
 }
 
@@ -56,31 +61,45 @@ export function createSendTracker(onUpdate: (listener: UpdateListener) => () => 
   });
 
   return {
-    wait(chatId, tempId, timeoutMs) {
+    wait(chatId, tempId, options) {
       const key = sendKey(chatId, tempId);
       const early = unclaimed.get(key);
       if (early) {
         unclaimed.delete(key);
         return early.ok ? Promise.resolve(early.message) : Promise.reject(early.error);
       }
+      const signal = options?.signal;
+      if (signal?.aborted) return Promise.reject(signal.reason);
       if (waiters.has(key)) {
         return Promise.reject(new Error(`Already waiting for message ${tempId} in chat ${chatId}`));
       }
+      const timeoutMs = options?.timeoutMs;
       return new Promise<td.message>((resolve, reject) => {
+        const cleanup = () => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+        };
+        const onAbort = () => {
+          waiters.delete(key);
+          cleanup();
+          reject(signal?.reason);
+        };
         const timer =
           timeoutMs === undefined
             ? undefined
             : setTimeout(() => {
                 waiters.delete(key);
+                cleanup();
                 reject(
                   new Error(
                     `No send confirmation for message ${tempId} in chat ${chatId} in ${timeoutMs} ms`,
                   ),
                 );
               }, timeoutMs);
+        signal?.addEventListener("abort", onAbort, { once: true });
         waiters.set(key, {
           settle(outcome) {
-            clearTimeout(timer);
+            cleanup();
             if (outcome.ok) resolve(outcome.message);
             else reject(outcome.error);
           },
