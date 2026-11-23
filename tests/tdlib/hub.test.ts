@@ -6,13 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { getLogger } from "../../src/log/index.ts";
-import { AuthorizationRequiredError, authorize } from "../../src/sources/tdlib/auth.ts";
-import { createTdClient, type TdClient } from "../../src/sources/tdlib/client.ts";
+import { createTdAccount } from "../../src/sources/tdlib/account.ts";
+import { AuthorizationRequiredError } from "../../src/sources/tdlib/auth.ts";
 import { TdClosedError, TdError, TdTimeoutError } from "../../src/sources/tdlib/errors.ts";
 import { resolveTdjsonPath } from "../../src/sources/tdlib/ffi.ts";
 import {
   createTdHub,
   runReceiveLoop,
+  type SendOptions,
   type TdHub,
   type TdHubOptions,
   type WorkerMessage,
@@ -23,8 +24,18 @@ const log = getLogger("test");
 const tmp = mkdtempSync(join(tmpdir(), "robin-tdlib-"));
 const fatalErrors: Error[] = [];
 
+interface TestClient {
+  readonly id: number;
+  readonly isOpen: boolean;
+  readonly authState: td.AuthorizationState["@type"] | undefined;
+  invoke<R extends td.Request>(request: R, options?: SendOptions): Promise<td.ResultOf<R>>;
+  onUpdate(fn: (update: td.Update, receivedAt: number) => void): void;
+  waitForAuth(): Promise<void>;
+  close(): Promise<void>;
+}
+
 let hub: TdHub | undefined;
-const clients: TdClient[] = [];
+const clients: TestClient[] = [];
 
 function hubOptions(overrides: Partial<TdHubOptions> = {}): TdHubOptions {
   return {
@@ -43,14 +54,62 @@ function openHub(overrides: Partial<TdHubOptions> = {}): TdHub {
   return hub;
 }
 
-function openClient(h: TdHub): TdClient {
-  const client = createTdClient(h);
+// Thin ClientSink wrapper for exercising the hub directly against libtdjson
+function openClient(h: TdHub): TestClient {
+  const listeners: ((update: td.Update, receivedAt: number) => void)[] = [];
+  const { promise: gotAuth, resolve: markAuth } = Promise.withResolvers<void>();
+  const { promise: closed, resolve: markClosed } = Promise.withResolvers<void>();
+  let authState: td.AuthorizationState["@type"] | undefined;
+  let open = true;
+
+  const finish = (reason: string) => {
+    if (!open) return;
+    open = false;
+    h.unregisterClient(id, reason);
+    markClosed();
+  };
+
+  const id = h.registerClient({
+    deliver(update, receivedAt) {
+      if (update["@type"] === "updateAuthorizationState") {
+        authState = update.authorization_state["@type"];
+        markAuth();
+      }
+      try {
+        for (const fn of listeners) fn(update, receivedAt);
+      } finally {
+        if (authState === "authorizationStateClosed") finish("authorizationStateClosed");
+      }
+    },
+    detached: finish,
+  });
+
+  // Wake TDLib lazily, just like account.ts does
+  h.send(id, { "@type": "getOption", name: "version" }).catch(() => {});
+
+  const client: TestClient = {
+    id,
+    get isOpen() {
+      return open;
+    },
+    get authState() {
+      return authState;
+    },
+    invoke: (request, options) => h.send(id, request, options),
+    onUpdate: (fn) => void listeners.push(fn),
+    waitForAuth: () => gotAuth,
+    async close() {
+      if (!open) return;
+      await h.send(id, { "@type": "close" }).catch(() => {});
+      await closed;
+    },
+  };
   clients.push(client);
   return client;
 }
 
 afterEach(async () => {
-  await Promise.all(clients.splice(0).map((c) => c.close(5000)));
+  await Promise.all(clients.splice(0).map((c) => c.close()));
   await hub?.stop();
   hub = undefined;
   expect(fatalErrors).toEqual([]);
@@ -102,9 +161,9 @@ describe("createTdHub", () => {
       seen.push({ type: update["@type"], receivedAt });
       routingFields.push(...Object.keys(update).filter((key) => key === "@client_id" || key === "@extra"));
     });
-    await client.waitForAuthorizationChange(0);
+    await client.waitForAuth();
 
-    expect(client.authorizationState?.["@type"]).toBe("authorizationStateWaitTdlibParameters");
+    expect(client.authState).toBe("authorizationStateWaitTdlibParameters");
     expect(seen.map((u) => u.type)).toContain("updateOption");
     // The hub routes by these and strips them; updates match td_api.tl exactly
     expect(routingFields).toEqual([]);
@@ -125,7 +184,7 @@ describe("createTdHub", () => {
 
     await client.close();
     expect(client.isOpen).toBe(false);
-    expect(client.authorizationState?.["@type"]).toBe("authorizationStateClosed");
+    expect(client.authState).toBe("authorizationStateClosed");
     expect(h.stats.clients).toBe(0);
     await expect(client.invoke({ "@type": "testCallEmpty" })).rejects.toBeInstanceOf(TdClosedError);
   });
@@ -166,25 +225,22 @@ describe("createTdHub", () => {
     const h = openHub();
     const client = openClient(h);
     const seen: string[] = [];
-    const other: string[] = [];
     client.onUpdate((update) => {
       seen.push(update["@type"]);
       if (seen.length === 1) throw new Error("listener broke");
     });
-    client.onUpdate((update) => other.push(update["@type"]));
 
     // The first authorization state is part of TDLib's startup burst, which arrives as one batch
-    await client.waitForAuthorizationChange(0);
+    await client.waitForAuth();
     expect(fatalErrors).toHaveLength(1);
     expect(fatalErrors[0]?.message).toMatch(/listener broke/);
-    // The updates after the failing one still came through, and the other listener saw the failing one too
+    // The updates after the failing one still came through
     expect(seen.length).toBeGreaterThan(1);
-    expect(other).toEqual(seen);
     fatalErrors.length = 0;
 
     // Receiving goes on, so the shutdown that fatal starts can close the account in order
     await client.close();
-    expect(client.authorizationState?.["@type"]).toBe("authorizationStateClosed");
+    expect(client.authState).toBe("authorizationStateClosed");
     expect(h.stats.instances).toBe(0);
   });
 
@@ -275,7 +331,7 @@ describe("runReceiveLoop", () => {
 
 describe("authorize", () => {
   test("without a session or prompter, a user account fails clearly", async () => {
-    const client = openClient(openHub());
+    const h = openHub();
     const dir = join(tmp, "user-db");
     const parameters: td.setTdlibParameters = {
       "@type": "setTdlibParameters",
@@ -294,10 +350,14 @@ describe("authorize", () => {
       system_version: "",
       application_version: "0",
     };
-    const error = await authorize(client, parameters, { kind: "user", prompter: undefined }, log).catch(
-      (e: unknown) => e,
+    const account = createTdAccount(
+      h,
+      { name: "user", credentials: { kind: "user", prompter: undefined }, parameters, onFatal: () => {} },
+      log,
     );
+    const error = await account.start().catch((e: unknown) => e);
     expect(error).toBeInstanceOf(AuthorizationRequiredError);
-    expect(client.authorizationState?.["@type"]).toBe("authorizationStateWaitPhoneNumber");
+    expect(account.isReady).toBe(false);
+    expect(h.stats.instances).toBe(0);
   });
 });

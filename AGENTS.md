@@ -24,7 +24,7 @@ Bun (runtime, tests, FFI, workers), TypeScript, Biome, SQLite via `bun:sqlite` +
 src/
 ├── tdlib-api/    Generated TDLib types (td-api.ts from td_api.tl). Neutral: anyone may import
 ├── sources/      Inputs from the outside world
-│   └── tdlib/    FFI, hub (with its receive worker), clients, accounts, auth, chat preloading,
+│   └── tdlib/    FFI, hub (with its receive worker), accounts, auth, chat preloading,
 │                 the ingest (adapter isolation boundary), the adapter (updates -> Robin events),
 │                 keys, the sender (Robin's messages out)
 ├── core/
@@ -72,7 +72,7 @@ Failures no caller can await (receive loop dead, storage down for good, account 
 
 ### Accounts
 
-The user account owns ingress for groups. The bot sends, runs with privacy mode off, and owns ingress for its private chats. A send returns only after TDLib's `updateMessageSendSucceeded` / `updateMessageSendFailed`.
+The user account owns ingress for groups. The bot sends, runs with privacy mode off, and owns ingress for its private chats. Each account owns a single TDLib client id and does not reconnect in-process: an unexpected close after startup is fatal so the process supervisor restarts Robin. A send returns only after TDLib's `updateMessageSendSucceeded` / `updateMessageSendFailed`.
 
 ### Adapter
 

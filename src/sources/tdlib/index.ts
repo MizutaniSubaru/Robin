@@ -14,10 +14,9 @@ import { resolveTdjsonPath } from "./ffi.ts";
 import { createTdHub, type TdHub } from "./hub.ts";
 
 export type * as td from "../../tdlib-api/td-api.ts";
-export type { AccountIdentity, AccountName, TdAccount } from "./account.ts";
+export type { AccountIdentity, AccountName, TdAccount, UpdateListener } from "./account.ts";
 export { createTelegramAdapter, type TelegramAdapter } from "./adapter.ts";
 export { AuthorizationRequiredError, type AuthPrompter } from "./auth.ts";
-export type { TdClient, UpdateListener } from "./client.ts";
 export { TdClosedError, TdError, TdTimeoutError } from "./errors.ts";
 export type { TdHub } from "./hub.ts";
 export { createIngest, type IngestDeps } from "./ingest.ts";
@@ -51,7 +50,6 @@ export interface AccountSetup {
   name: AccountName;
   // For the user account; without it only an existing session works
   prompter?: AuthPrompter | undefined;
-  autoRestart: boolean;
   onFatal(error: Error): void;
   // Defaults to data/tdlib/<name>
   databaseDirectory?: string | undefined;
@@ -63,7 +61,7 @@ export function createAccount(
   paths: Paths,
   env: TelegramEnv,
   lc: Lifecycle,
-  { name, prompter, autoRestart, onFatal, databaseDirectory = join(paths.tdlib, name) }: AccountSetup,
+  { name, prompter, onFatal, databaseDirectory = join(paths.tdlib, name) }: AccountSetup,
 ): TdAccount {
   let credentials: Credentials;
   if (name === "bot") {
@@ -75,7 +73,7 @@ export function createAccount(
 
   const account = createTdAccount(
     hub,
-    { name, credentials, parameters: tdlibParameters(config, env, databaseDirectory), autoRestart, onFatal },
+    { name, credentials, parameters: tdlibParameters(config, env, databaseDirectory), onFatal },
     getLogger("tdlib", name),
   );
   lc.defer(`tdlib ${name}`, () => account.close());

@@ -3,8 +3,18 @@
 
 import type { Logger } from "../../log/index.ts";
 import type * as td from "../../tdlib-api/td-api.ts";
-import type { TdClient } from "./client.ts";
 import { TdClosedError, TdError } from "./errors.ts";
+
+// What authorize() needs from the TDLib account while logging it in
+export interface AuthClient {
+  readonly authorizationState: td.AuthorizationState | undefined;
+  // Bumped on every authorization state update, including repeats of the same state
+  readonly authorizationVersion: number;
+  readonly isOpen: boolean;
+  invoke<R extends td.Request>(request: R): Promise<td.ResultOf<R>>;
+  // Resolves once an authorization update newer than `version` has arrived (or the client closed)
+  waitForAuthorizationChange(version: number): Promise<void>;
+}
 
 // Answers for an interactive user login. Values are passed straight to TDLib and never logged
 export interface AuthPrompter {
@@ -31,7 +41,7 @@ export class AuthorizationRequiredError extends Error {
 const RETRYABLE_ANSWER_CODES = new Set([400]);
 
 export async function authorize(
-  client: TdClient,
+  client: AuthClient,
   parameters: td.setTdlibParameters,
   credentials: Credentials,
   log: Logger,

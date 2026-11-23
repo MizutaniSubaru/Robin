@@ -4,9 +4,8 @@
 
 import type { Inbound } from "../../core/store/index.ts";
 import type { Logger } from "../../log/index.ts";
-import type { AccountName } from "./account.ts";
+import type { AccountName, UpdateListener } from "./account.ts";
 import type { TelegramAdapter } from "./adapter.ts";
-import type { UpdateListener } from "./client.ts";
 
 export interface IngestDeps {
   adapter: TelegramAdapter;

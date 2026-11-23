@@ -54,7 +54,7 @@ export async function createApp(
     name: AccountName,
     subscribe?: (account: TdAccount) => void,
   ): Promise<TdAccount> => {
-    const account = createAccount(hub, config, paths, env, lc, { name, autoRestart: true, onFatal: fatal });
+    const account = createAccount(hub, config, paths, env, lc, { name, onFatal: fatal });
     account.onUpdate(createIngest(name, { adapter, inbound, log: ingestLog }));
     subscribe?.(account);
     await account.start();

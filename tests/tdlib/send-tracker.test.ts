@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { UpdateListener } from "../../src/sources/tdlib/client.ts";
+import type { UpdateListener } from "../../src/sources/tdlib/account.ts";
 import type { td } from "../../src/sources/tdlib/index.ts";
 import { createSendTracker } from "../../src/sources/tdlib/send-tracker.ts";
 import { update } from "../fixtures/td.ts";

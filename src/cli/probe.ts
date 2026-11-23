@@ -79,7 +79,6 @@ async function openTd(ctx: ProcessContext) {
   return async (name: AccountName, databaseDirectory?: string): Promise<TdAccount> => {
     const account = createAccount(hub, ctx.config, ctx.paths, env, ctx.lc, {
       name,
-      autoRestart: false,
       onFatal: ctx.fatal,
       databaseDirectory,
     });

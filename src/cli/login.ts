@@ -42,7 +42,6 @@ await runProcess("login", async ({ config, paths, lc, log, fatal }) => {
   const account = createAccount(hub, config, paths, env, lc, {
     name,
     prompter: name === "user" ? prompter : undefined,
-    autoRestart: false,
     onFatal: fatal,
   });
   await account.start();

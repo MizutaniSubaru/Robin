@@ -3,7 +3,7 @@
 // temporary id, so a sender can await the final result
 
 import type * as td from "../../tdlib-api/td-api.ts";
-import type { UpdateListener } from "./client.ts";
+import type { UpdateListener } from "./account.ts";
 import { TdError } from "./errors.ts";
 
 type Outcome = { ok: true; message: td.message } | { ok: false; error: Error };
