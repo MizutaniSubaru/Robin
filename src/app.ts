@@ -17,7 +17,6 @@ import {
   createTelegramAdapter,
   createTelegramSender,
   preloadChats,
-  type SendTracker,
   startTdHub,
   type TdAccount,
   userKey,
@@ -49,31 +48,28 @@ export async function createApp(
 
   const ingestLog = getLogger("ingest");
 
-  // Started one after the other: the user account may prompt for a login on the terminal
-  const openAccount = async (
-    name: AccountName,
-    subscribe?: (account: TdAccount) => void,
-  ): Promise<TdAccount> => {
+  // Ingest subscribes before start(), so the startup updates are adapted too
+  const ingestedAccount = (name: AccountName): TdAccount => {
     const account = createAccount(hub, config, paths, env, lc, { name, onFatal: fatal });
     account.onUpdate(createIngest(name, { adapter, inbound, log: ingestLog }));
-    subscribe?.(account);
-    await account.start();
     return account;
   };
-  const user = await openAccount("user");
+
+  // Started one after the other: the user account may prompt for a login on the terminal
+  const user = ingestedAccount("user");
+  await user.start();
   // Before the bot and the agent: the chats it introduces are known by the time messages need them
   await preloadChats(user, getLogger("tdlib", "user"));
-  let tracker: SendTracker | undefined;
-  const bot = await openAccount("bot", (account) => {
-    // Before start: TDLib reports sends it finishes from before a restart right away
-    const created = createSendTracker((listener) => account.onUpdate(listener));
-    lc.defer("send tracker", () => created.dispose());
-    tracker = created;
-  });
-  if (!tracker) throw new Error("Send tracker was not created");
+
+  const bot = ingestedAccount("bot");
+  // Before start: TDLib reports sends it finishes from before a restart right away
+  const tracker = createSendTracker((listener) => bot.onUpdate(listener));
+  lc.defer("send tracker", () => tracker.dispose());
+  await bot.start();
 
   const agentLog = getLogger("agent");
-  const sender = createSelfSender(store, createTelegramSender(bot, tracker), "bot", agentLog);
+  const telegram = createTelegramSender(bot, tracker);
+  const sender = createSelfSender(store, telegram, "bot", agentLog);
   sender.recover();
 
   const providerName = config.agent.provider;
@@ -92,7 +88,7 @@ export async function createApp(
         timezone: config.timezone,
         maxSteps: config.agent.max_steps,
         maxSends: config.agent.max_sends_per_run,
-        maxTextLength: 4096,
+        maxTextLength: telegram.maxTextLength,
       },
       allowedChats: config.agent.allowed_chats,
       self: { username: bot.me.username, userKey: userKey(bot.me.userId) },
