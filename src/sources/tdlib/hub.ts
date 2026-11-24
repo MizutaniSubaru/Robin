@@ -372,7 +372,7 @@ export function createTdHub(options: TdHubOptions): TdHub {
   }
 
   function dispatch(raw: string, receivedAt: number): void {
-    // Routing fields are stripped, so clients and storage see exactly the td_api.tl object
+    // Routing fields are stripped, so clients see exactly the td_api.tl object
     const { "@extra": extra, "@client_id": clientId, ...object } = parseTdJson(raw);
 
     if (extra !== undefined) {

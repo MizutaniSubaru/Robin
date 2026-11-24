@@ -7,7 +7,7 @@ import { getTdjson } from "prebuilt-tdlib";
 
 import type * as td from "../../tdlib-api/td-api.ts";
 
-//the keywords the hub depends to parse
+// The fields the hub routes by; the rest of the object stays untyped until dispatch narrows it
 export interface TdEnvelope {
   "@type": string;
   "@extra"?: string;
